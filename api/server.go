@@ -76,6 +76,7 @@ type APIServer struct {
 	configPath string         // 配置文件路径
 	dhcpServer *dhcp.Server
 	port       int
+	host       string // API监听地址
 	server     *http.Server
 	// 添加重新加载回调函数
 	reloadCallback func(*config.Config) error
@@ -122,6 +123,12 @@ type ServerInfo struct {
 
 // NewAPIServer 创建新的API服务器
 func NewAPIServer(pool *dhcp.IPPool, checker *gateway.HealthChecker, cfg *config.Config, configPath string, dhcpServer *dhcp.Server, port int) *APIServer {
+	// 获取API监听地址，如果为空则使用默认值 0.0.0.0
+	host := cfg.Server.APIHost
+	if host == "" {
+		host = "0.0.0.0"
+	}
+
 	return &APIServer{
 		pool:       pool,
 		checker:    checker,
@@ -129,6 +136,7 @@ func NewAPIServer(pool *dhcp.IPPool, checker *gateway.HealthChecker, cfg *config
 		configPath: configPath,
 		dhcpServer: dhcpServer,
 		port:       port,
+		host:       host,
 	}
 }
 
@@ -143,6 +151,13 @@ func (api *APIServer) UpdateReferences(pool *dhcp.IPPool, checker *gateway.Healt
 	api.checker = checker
 	api.config = cfg
 	api.dhcpServer = dhcpServer
+
+	// 更新API监听地址
+	host := cfg.Server.APIHost
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	api.host = host
 }
 
 // Start 启动API服务器
@@ -156,12 +171,12 @@ func (api *APIServer) Start() error {
 	corsHandler := corsMiddleware(mux)
 
 	api.server = &http.Server{
-		Addr:    fmt.Sprintf(":%d", api.port),
+		Addr:    fmt.Sprintf("%s:%d", api.host, api.port),
 		Handler: corsHandler,
 	}
 
-	log.Printf("启动HTTP API服务器，端口: %d", api.port)
-	log.Printf("API文档: http://localhost:%d", api.port)
+	log.Printf("启动HTTP API服务器，地址: %s:%d", api.host, api.port)
+	log.Printf("API文档: http://%s:%d", api.host, api.port)
 
 	return api.server.ListenAndServe()
 }
@@ -602,6 +617,50 @@ func (api *APIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
         .status-label { font-weight: 500; color: #666; }
         .status-value { color: #333; }
         
+        /* 加载提示样式 */
+        .loading-overlay { 
+            display: none; 
+            position: fixed; 
+            z-index: 10001; 
+            left: 0; 
+            top: 0; 
+            width: 100%; 
+            height: 100%; 
+            background-color: rgba(0,0,0,0.7); 
+            animation: fadeIn 0.3s ease; 
+        }
+        .loading-content { 
+            position: absolute; 
+            top: 50%; 
+            left: 50%; 
+            transform: translate(-50%, -50%); 
+            background: white; 
+            padding: 2rem; 
+            border-radius: 12px; 
+            text-align: center; 
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3); 
+            min-width: 200px; 
+        }
+        .loading-spinner { 
+            width: 40px; 
+            height: 40px; 
+            border: 4px solid #f3f3f3; 
+            border-top: 4px solid #667eea; 
+            border-radius: 50%; 
+            animation: spin 1s linear infinite; 
+            margin: 0 auto 1rem auto; 
+        }
+        @keyframes spin { 
+            0% { transform: rotate(0deg); } 
+            100% { transform: rotate(360deg); } 
+        }
+        .loading-text { 
+            color: #333; 
+            font-size: 1rem; 
+            font-weight: 500; 
+            margin: 0; 
+        }
+        
         /* 美化确认对话框样式 */
         .confirm-modal { display: none; position: fixed; z-index: 10000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); animation: fadeIn 0.3s ease; }
         .confirm-modal-content { background-color: white; margin: 15% auto; padding: 0; border-radius: 12px; width: 420px; max-width: 90%; box-shadow: 0 25px 50px rgba(0,0,0,0.4); animation: slideIn 0.3s ease; transform: translateY(-50px); opacity: 0; animation-fill-mode: forwards; }
@@ -800,6 +859,10 @@ func (api *APIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
         .dns-servers-section { }
         .dns-server-row { display: flex; gap: 10px; margin-bottom: 10px; align-items: center; }
         .dns-server-row input { flex: 1; }
+        /* 网关DNS显示样式 */
+        .dns-list { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+        .dns-item { background: #e8f4f8; color: #2c5282; padding: 0.2rem 0.5rem; border-radius: 12px; font-size: 0.75rem; border: 1px solid #bee3f8; }
+        .text-muted { color: #6c757d; font-style: italic; }
         .btn-small { padding: 6px 12px; font-size: 0.875rem; }
         .form-help { color: #6c757d; font-size: 0.875rem; margin-top: 0.25rem; display: block; }
         
@@ -1255,8 +1318,33 @@ func (api *APIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
                                     <input type="number" id="serverPort" class="form-control" placeholder="67" min="1" max="65535" required>
                                 </div>
                                 <div class="form-group">
-                                    <label for="serverAPIPort">API端口</label>
+                                    <label for="serverAPIPort">Web管理界面端口</label>
                                     <input type="number" id="serverAPIPort" class="form-control" placeholder="8080" min="1" max="65535" required>
+                                    <small class="form-help">用于访问Web管理界面的端口号</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="serverAPIHost">Web管理界面访问地址</label>
+                                    <input type="text" id="serverAPIHost" class="form-control" placeholder="0.0.0.0" pattern="^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$|^localhost$|^0\.0\.0\.0$|^$">
+                                    <small class="form-help">
+                                        <strong>访问地址说明：</strong><br>
+                                        • <code>0.0.0.0</code> - 允许从任何IP地址访问Web界面<br>
+                                        • <code>127.0.0.1</code> - 仅允许本地访问，更安全<br>
+                                        • <code>192.168.1.10</code> - 仅允许从指定IP地址访问<br>
+                                        • 留空使用默认值(0.0.0.0)<br>
+                                        <strong>⚠️ 修改此设置需要重启服务器</strong>
+                                    </small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="serverLeaseTime">DHCP租期时间</label>
+                                    <input type="text" id="serverLeaseTime" class="form-control" placeholder="24h" pattern="^(\d+[smhd])+$">
+                                    <small class="form-help">
+                                        <strong>租期时间格式：</strong><br>
+                                        • <code>24h</code> - 24小时（推荐）<br>
+                                        • <code>30m</code> - 30分钟<br>
+                                        • <code>1d</code> - 1天<br>
+                                        • <code>2h30m</code> - 2小时30分钟<br>
+                                        支持 s(秒), m(分), h(小时), d(天) 组合
+                                    </small>
                                 </div>
                                 <div class="form-group">
                                     <label for="serverLogLevel">日志级别</label>
@@ -1401,7 +1489,7 @@ sudo ./dhcp-server -config my-config.yaml
 # 查看版本信息
 ./dhcp-server -version</pre>
                                 </div>
-                                <p>服务启动后，访问 <code>http://localhost:8080</code> 进入Web管理界面。</p>
+                                <p>服务启动后，访问 <code>http://localhost:8083</code> 进入Web管理界面。</p>
                             </div>
                         </div>
 
@@ -1822,6 +1910,14 @@ curl http://localhost:8080/api/health</pre>
                         <label for="gatewayDescription">描述</label>
                         <input type="text" id="gatewayDescription" class="form-control" placeholder="网关用途或备注">
                     </div>
+                    <div class="form-group">
+                        <label for="gatewayDNS">DNS服务器</label>
+                        <div id="gatewayDNSContainer">
+                            <input type="text" class="form-control gateway-dns-input" placeholder="例如：8.8.8.8">
+                        </div>
+                        <button type="button" class="btn btn-secondary btn-sm mt-2" onclick="addGatewayDNSField()">+ 添加DNS</button>
+                        <small class="form-help">可配置多个DNS服务器，也可以不配置。当主机分配到此网关时，会优先使用这些DNS服务器</small>
+                    </div>
                 </form>
             </div>
             <div class="modal-footer">
@@ -1915,12 +2011,42 @@ curl http://localhost:8080/api/health</pre>
             }
         }
 
+        // 加载提示相关函数
+        function showLoading(text = '正在处理中...') {
+            const overlay = document.getElementById('loadingOverlay');
+            const loadingText = document.getElementById('loadingText');
+            if (overlay && loadingText) {
+                loadingText.textContent = text;
+                overlay.style.display = 'block';
+            }
+        }
+
+        function hideLoading() {
+            const overlay = document.getElementById('loadingOverlay');
+            if (overlay) {
+                overlay.style.display = 'none';
+            }
+        }
+
         // 页面加载完成后初始化
         document.addEventListener('DOMContentLoaded', function() {
             loadStats();
             loadActiveLeases();
             loadGatewayStatus();
             loadDevices();
+            
+            // 检查配置管理标签页是否需要初始化（延迟执行以确保DOM完全就绪）
+            setTimeout(() => {
+                const configTab = document.getElementById('config');
+                if (configTab && configTab.classList.contains('active')) {
+                    // 如果配置标签页是活跃的，检查网络配置子标签页
+                    const networkConfigTab = document.getElementById('network-config');
+                    if (networkConfigTab && networkConfigTab.classList.contains('active')) {
+                        console.log('🔄 页面加载时自动加载网络配置...');
+                        loadNetworkConfig();
+                    }
+                }
+            }, 100);
             
             // 页面加载后检查统计数值可见性
             setTimeout(() => {
@@ -2012,6 +2138,9 @@ curl http://localhost:8080/api/health</pre>
                 case 'devices':
                     loadDevices();
                     break;
+                case 'server-config':
+                    loadServerConfig();
+                    break;
                 case 'config':
                     // 默认切换到网络配置子标签页
                     switchConfigSubTab('network-config');
@@ -2030,7 +2159,12 @@ curl http://localhost:8080/api/health</pre>
             document.querySelectorAll('.config-sub-pane').forEach(pane => pane.classList.remove('active'));
             document.querySelectorAll('.config-tab-button').forEach(btn => btn.classList.remove('active'));
             document.getElementById(subTabName).classList.add('active');
-            event.target.classList.add('active');
+            
+            // 激活对应的按钮
+            const selectedButton = document.querySelector('button[onclick="switchConfigSubTab(\'' + subTabName + '\')"]');
+            if (selectedButton) {
+                selectedButton.classList.add('active');
+            }
             
             // 加载对应的数据
             switch(subTabName) {
@@ -2256,6 +2390,7 @@ curl http://localhost:8080/api/health</pre>
                                 '<th>IP地址</th>' +
                                 '<th>类型</th>' +
                                 '<th>状态</th>' +
+                                '<th>DNS服务器</th>' +
                                 '<th>描述</th>' +
                                 '<th>操作</th>' +
                             '</tr>' +
@@ -2277,6 +2412,11 @@ curl http://localhost:8080/api/health</pre>
                                                 (info.healthy ? '健康' : '不健康') +
                                             '</span>' +
                                         '</div>' +
+                                    '</td>' +
+                                    '<td>' + 
+                                        (info.dns_servers && info.dns_servers.length > 0 ? 
+                                            '<div class="dns-list">' + info.dns_servers.map(dns => '<span class="dns-item">' + dns + '</span>').join('') + '</div>' : 
+                                            '<span class="text-muted">未配置</span>') +
                                     '</td>' +
                                     '<td>' + (info.description || '-') + '</td>' +
                                     '<td>' +
@@ -3197,12 +3337,17 @@ curl http://localhost:8080/api/health</pre>
                 return;
             }
             
+            // 显示加载提示
+            showLoading('正在删除设备...');
+            
             try {
                 const response = await fetch('/api/devices', {
                     method: 'DELETE',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ mac: mac })
                 });
+                
+                hideLoading(); // 隐藏加载提示
                 
                 if (response.ok) {
                     showMessage('✅ 设备删除成功', 'success');
@@ -3212,6 +3357,7 @@ curl http://localhost:8080/api/health</pre>
                     showMessage('❌ 设备删除失败: ' + error, 'error');
                 }
             } catch (error) {
+                hideLoading(); // 隐藏加载提示
                 console.error('删除设备失败:', error);
                 showMessage('❌ 设备删除失败: ' + error.message, 'error');
             }
@@ -3224,6 +3370,9 @@ curl http://localhost:8080/api/health</pre>
                 showMessage('设备未找到', 'error');
                 return;
             }
+            
+            // 显示加载提示
+            showLoading('正在准备配置表单...');
             
             const modal = document.getElementById('staticIPModal');
             
@@ -3240,11 +3389,22 @@ curl http://localhost:8080/api/health</pre>
             document.getElementById('staticGateway').value = '';
             document.getElementById('staticHostname').value = device.owner || '';
             
-            // 加载网关列表
-            await loadGatewaysForSelect();
-            
-            // 显示模态框
-            modal.style.display = 'block';
+            try {
+                // 加载网关列表
+                await loadGatewaysForSelect();
+                
+                // 添加小延迟确保加载提示可见
+                await new Promise(resolve => setTimeout(resolve, 300));
+                
+                hideLoading(); // 隐藏加载提示
+                
+                // 显示模态框
+                modal.style.display = 'block';
+            } catch (error) {
+                hideLoading(); // 隐藏加载提示
+                console.error('准备配置表单失败:', error);
+                showMessage('准备配置表单失败: ' + error.message, 'error');
+            }
         }
 
         function closeStaticIPModal() {
@@ -3292,6 +3452,9 @@ curl http://localhost:8080/api/health</pre>
 
         // 将动态租约转换为静态IP绑定
         async function convertToStatic(mac, ip, hostname, gateway) {
+            // 显示加载提示
+            showLoading('正在转换租约为静态IP...');
+            
             try {
                 // 自动生成唯一别名
                 const alias = await generateUniqueAlias(hostname || mac.replace(/:/g, ''));
@@ -3309,6 +3472,8 @@ curl http://localhost:8080/api/health</pre>
                     body: JSON.stringify(convertData)
                 });
                 
+                hideLoading(); // 隐藏加载提示
+                
                 if (response.ok) {
                     showMessage('✅ 租约转换为静态IP成功！设备重新连接后生效。别名: ' + alias, 'success');
                     loadDevices(); // 刷新设备列表
@@ -3318,6 +3483,7 @@ curl http://localhost:8080/api/health</pre>
                     showMessage('❌ 转换失败: ' + (errorData.error || '未知错误'), 'error');
                 }
             } catch (error) {
+                hideLoading(); // 隐藏加载提示
                 console.error('转换静态IP失败:', error);
                 showMessage('❌ 转换失败: ' + error.message, 'error');
             }
@@ -3338,6 +3504,9 @@ curl http://localhost:8080/api/health</pre>
                 return;
             }
             
+            // 显示加载提示
+            showLoading('正在加载编辑表单...');
+            
             try {
                 // 填充表单数据
                 document.getElementById('staticMAC').value = mac;
@@ -3353,9 +3522,12 @@ curl http://localhost:8080/api/health</pre>
                 // 加载网关列表
                 await loadGatewaysForSelect();
                 
+                hideLoading(); // 隐藏加载提示
+                
                 // 显示模态框
                 document.getElementById('staticIPModal').style.display = 'block';
             } catch (error) {
+                hideLoading(); // 隐藏加载提示
                 console.error('准备编辑表单失败:', error);
                 showMessage('准备编辑表单失败: ' + error.message, 'error');
             }
@@ -3388,6 +3560,9 @@ curl http://localhost:8080/api/health</pre>
                 return;
             }
             
+            // 显示加载提示
+            showLoading('正在删除静态IP绑定...');
+            
             try {
                 // 删除静态绑定
                 const deleteResponse = await fetch('/api/bindings', {
@@ -3395,6 +3570,8 @@ curl http://localhost:8080/api/health</pre>
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ alias: binding.alias })
                 });
+                
+                hideLoading(); // 隐藏加载提示
                 
                 if (deleteResponse.ok) {
                     showMessage('✅ 静态IP绑定删除成功！设备重新连接后将使用动态IP。', 'success');
@@ -3405,6 +3582,7 @@ curl http://localhost:8080/api/health</pre>
                     showMessage('❌ 删除静态IP绑定失败: ' + (errorData.error || '未知错误'), 'error');
                 }
             } catch (error) {
+                hideLoading(); // 隐藏加载提示
                 console.error('删除静态IP绑定失败:', error);
                 showMessage('❌ 删除静态IP绑定失败: ' + error.message, 'error');
             }
@@ -3504,12 +3682,17 @@ curl http://localhost:8080/api/health</pre>
                 bindingData.old_alias = oldAlias;
             }
             
+            // 显示加载提示
+            showLoading(isEditMode ? '正在更新静态IP...' : '正在配置静态IP...');
+            
             try {
                 const response = await fetch('/api/bindings', {
                     method: isEditMode ? 'PUT' : 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(bindingData)
                 });
+                
+                hideLoading(); // 隐藏加载提示
                 
                 if (response.ok) {
                     const action = isEditMode ? '更新' : '配置';
@@ -3526,6 +3709,7 @@ curl http://localhost:8080/api/health</pre>
                     showMessage('静态IP' + action + '失败: ' + (errorData.error || '未知错误'), 'error');
                 }
             } catch (error) {
+                hideLoading(); // 隐藏加载提示
                 const action = isEditMode ? '更新' : '配置';
                 console.error(action + '静态IP失败:', error);
                 showMessage(action + '静态IP失败: ' + error.message, 'error');
@@ -3539,14 +3723,21 @@ curl http://localhost:8080/api/health</pre>
             document.getElementById('gatewayModalTitle').textContent = '添加网关';
             document.getElementById('gatewayForm').reset();
             currentGateway = null;
+            // 重置DNS输入框
+            resetGatewayDNSFields();
             document.getElementById('gatewayModal').style.display = 'block';
         }
 
         function editGateway(gatewayName) {
+            // 显示加载提示
+            showLoading('正在加载网关信息...');
+            
             // 从当前数据中获取网关信息
             fetch('/api/gateways')
                 .then(response => response.json())
                 .then(gateways => {
+                    hideLoading(); // 隐藏加载提示
+                    
                     const gateway = gateways[gatewayName];
                     if (!gateway) {
                         showMessage('网关信息未找到', 'error');
@@ -3560,10 +3751,14 @@ curl http://localhost:8080/api/health</pre>
                     document.getElementById('gatewayIsDefault').checked = gateway.is_default;
                     document.getElementById('gatewayDescription').value = gateway.description || '';
                     
+                    // 加载DNS配置
+                    loadGatewayDNSFields(gateway.dns_servers || []);
+                    
                     currentGateway = gatewayName;
                     document.getElementById('gatewayModal').style.display = 'block';
                 })
                 .catch(error => {
+                    hideLoading(); // 隐藏加载提示
                     console.error('获取网关信息失败:', error);
                     showMessage('获取网关信息失败', 'error');
                 });
@@ -3574,6 +3769,7 @@ curl http://localhost:8080/api/health</pre>
             const ip = document.getElementById('gatewayIP').value.trim();
             const isDefault = document.getElementById('gatewayIsDefault').checked;
             const description = document.getElementById('gatewayDescription').value.trim();
+            const dnsServers = collectGatewayDNSServers();
 
             if (!name) {
                 showMessage('网关名称不能为空', 'error');
@@ -3597,12 +3793,16 @@ curl http://localhost:8080/api/health</pre>
                 name: name,
                 ip: ip,
                 is_default: isDefault,
-                description: description
+                description: description,
+                dns_servers: dnsServers
             };
 
             if (isEdit) {
                 data.old_name = currentGateway;
             }
+
+            // 显示加载提示
+            showLoading(isEdit ? '正在更新网关...' : '正在添加网关...');
 
             try {
                 const response = await fetch('/api/gateways', {
@@ -3610,6 +3810,8 @@ curl http://localhost:8080/api/health</pre>
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(data)
                 });
+
+                hideLoading(); // 隐藏加载提示
 
                 if (response.ok) {
                     const action = isEdit ? '更新' : '添加';
@@ -3622,6 +3824,7 @@ curl http://localhost:8080/api/health</pre>
                     showMessage('网关' + action + '失败: ' + (errorData.error || '未知错误'), 'error');
                 }
             } catch (error) {
+                hideLoading(); // 隐藏加载提示
                 const action = isEdit ? '更新' : '添加';
                 console.error(action + '网关失败:', error);
                 showMessage(action + '网关失败: ' + error.message, 'error');
@@ -3638,12 +3841,17 @@ curl http://localhost:8080/api/health</pre>
                 return;
             }
 
+            // 显示加载提示
+            showLoading('正在删除网关...');
+
             try {
                 const response = await fetch('/api/gateways', {
                     method: 'DELETE',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ name: gatewayName })
                 });
+
+                hideLoading(); // 隐藏加载提示
 
                 if (response.ok) {
                     showMessage('✅ 网关删除成功！', 'success');
@@ -3653,6 +3861,7 @@ curl http://localhost:8080/api/health</pre>
                     showMessage('❌ 网关删除失败: ' + (errorData.error || '未知错误'), 'error');
                 }
             } catch (error) {
+                hideLoading(); // 隐藏加载提示
                 console.error('删除网关失败:', error);
                 showMessage('❌ 删除网关失败: ' + error.message, 'error');
             }
@@ -3662,6 +3871,67 @@ curl http://localhost:8080/api/health</pre>
             document.getElementById('gatewayModal').style.display = 'none';
             document.getElementById('gatewayForm').reset();
             currentGateway = null;
+        }
+
+        // DNS管理相关函数
+        function resetGatewayDNSFields() {
+            const container = document.getElementById('gatewayDNSContainer');
+            container.innerHTML = '<input type="text" class="form-control gateway-dns-input" placeholder="例如：8.8.8.8">';
+        }
+
+        function loadGatewayDNSFields(dnsServers) {
+            const container = document.getElementById('gatewayDNSContainer');
+            container.innerHTML = '';
+            
+            if (dnsServers.length === 0) {
+                // 如果没有DNS服务器，显示一个空的输入框
+                container.innerHTML = '<input type="text" class="form-control gateway-dns-input" placeholder="例如：8.8.8.8">';
+            } else {
+                // 为每个DNS服务器创建输入框
+                dnsServers.forEach((dns, index) => {
+                    const inputGroup = document.createElement('div');
+                    inputGroup.className = 'input-group mb-2';
+                    inputGroup.innerHTML = 
+                        '<input type="text" class="form-control gateway-dns-input" value="' + dns + '" placeholder="例如：8.8.8.8">' +
+                        '<button type="button" class="btn btn-outline-danger btn-sm" onclick="removeGatewayDNSField(this)">删除</button>';
+                    container.appendChild(inputGroup);
+                });
+            }
+        }
+
+        function collectGatewayDNSServers() {
+            const inputs = document.querySelectorAll('.gateway-dns-input');
+            const dnsServers = [];
+            
+            inputs.forEach(input => {
+                const value = input.value.trim();
+                if (value) {
+                    dnsServers.push(value);
+                }
+            });
+            
+            return dnsServers;
+        }
+
+        function addGatewayDNSField() {
+            const container = document.getElementById('gatewayDNSContainer');
+            const inputGroup = document.createElement('div');
+            inputGroup.className = 'input-group mb-2';
+            inputGroup.innerHTML = 
+                '<input type="text" class="form-control gateway-dns-input" placeholder="例如：8.8.8.8">' +
+                '<button type="button" class="btn btn-outline-danger btn-sm" onclick="removeGatewayDNSField(this)">删除</button>';
+            container.appendChild(inputGroup);
+        }
+
+        function removeGatewayDNSField(button) {
+            const container = document.getElementById('gatewayDNSContainer');
+            if (container.children.length > 1) {
+                button.parentElement.remove();
+            } else {
+                // 如果只有一个输入框，清空内容而不删除
+                const input = button.parentElement.querySelector('.gateway-dns-input');
+                input.value = '';
+            }
         }
 
         // 扩展模态框点击外部关闭功能，添加网关模态框
@@ -3862,6 +4132,29 @@ curl http://localhost:8080/api/health</pre>
                 document.getElementById('serverInterface').value = config.interface || '';
                 document.getElementById('serverPort').value = config.port || 67;
                 document.getElementById('serverAPIPort').value = config.api_port || 8080;
+                document.getElementById('serverAPIHost').value = config.api_host || '';
+                
+                // 处理租期时间：将纳秒转换为可读格式
+                let leaseTimeDisplay = '24h';
+                if (config.lease_time) {
+                    const seconds = Math.floor(config.lease_time / 1000000000); // 纳秒转秒
+                    const hours = Math.floor(seconds / 3600);
+                    const minutes = Math.floor((seconds % 3600) / 60);
+                    const remainingSeconds = seconds % 60;
+                    
+                    if (hours > 0) {
+                        leaseTimeDisplay = hours + 'h';
+                        if (minutes > 0) leaseTimeDisplay += minutes + 'm';
+                        if (remainingSeconds > 0) leaseTimeDisplay += remainingSeconds + 's';
+                    } else if (minutes > 0) {
+                        leaseTimeDisplay = minutes + 'm';
+                        if (remainingSeconds > 0) leaseTimeDisplay += remainingSeconds + 's';
+                    } else {
+                        leaseTimeDisplay = remainingSeconds + 's';
+                    }
+                }
+                document.getElementById('serverLeaseTime').value = leaseTimeDisplay;
+                
                 document.getElementById('serverLogLevel').value = config.log_level || 'info';
                 document.getElementById('serverLogFile').value = config.log_file || 'dhcp.log';
                 document.getElementById('serverDebug').checked = config.debug || false;
@@ -3875,10 +4168,34 @@ curl http://localhost:8080/api/health</pre>
 
         async function saveServerConfig() {
             try {
+                // 解析租期时间字符串为秒数
+                const leaseTimeStr = document.getElementById('serverLeaseTime').value.trim();
+                let leaseTimeSeconds = 86400; // 默认24小时
+                
+                if (leaseTimeStr) {
+                    // 支持多种时间格式：24h, 24h0m0s, 86400s, 86400
+                    if (leaseTimeStr.includes('h') || leaseTimeStr.includes('m') || leaseTimeStr.includes('s')) {
+                        // 解析时间格式如 "24h0m0s" 或 "24h"
+                        const hours = leaseTimeStr.match(/(\d+)h/);
+                        const minutes = leaseTimeStr.match(/(\d+)m/);
+                        const seconds = leaseTimeStr.match(/(\d+)s/);
+                        
+                        leaseTimeSeconds = 0;
+                        if (hours) leaseTimeSeconds += parseInt(hours[1]) * 3600;
+                        if (minutes) leaseTimeSeconds += parseInt(minutes[1]) * 60;
+                        if (seconds) leaseTimeSeconds += parseInt(seconds[1]);
+                    } else {
+                        // 直接解析数字（秒）
+                        leaseTimeSeconds = parseInt(leaseTimeStr) || 86400;
+                    }
+                }
+                
                 const config = {
                     interface: document.getElementById('serverInterface').value,
                     port: parseInt(document.getElementById('serverPort').value),
                     api_port: parseInt(document.getElementById('serverAPIPort').value),
+                    api_host: document.getElementById('serverAPIHost').value.trim(),
+                    lease_time: leaseTimeSeconds,
                     log_level: document.getElementById('serverLogLevel').value,
                     log_file: document.getElementById('serverLogFile').value,
                     debug: document.getElementById('serverDebug').checked
@@ -3891,7 +4208,12 @@ curl http://localhost:8080/api/health</pre>
                 });
                 
                 if (response.ok) {
-                    showMessage('✅ 服务器配置保存成功', 'success');
+                    const result = await response.json();
+                    if (result.restart_required) {
+                        showMessage('✅ ' + result.message, 'warning');
+                    } else {
+                        showMessage('✅ 服务器配置保存成功', 'success');
+                    }
                 } else {
                     const error = await response.json();
                     showMessage('❌ 保存失败: ' + error.error, 'error');
@@ -3951,9 +4273,17 @@ curl http://localhost:8080/api/health</pre>
 
         // 网络配置功能
         async function loadNetworkConfig() {
+            console.log('🔄 开始加载网络配置...');
             try {
                 const response = await fetch('/api/config/network');
+                console.log('📡 API响应状态:', response.status);
+                
+                if (!response.ok) {
+                    throw new Error('HTTP error! status: ' + response.status);
+                }
+                
                 const config = await response.json();
+                console.log('📋 获取到的配置数据:', config);
                 
                 document.getElementById('networkSubnet').value = config.subnet || '';
                 document.getElementById('networkStartIP').value = config.start_ip || '';
@@ -3975,9 +4305,10 @@ curl http://localhost:8080/api/health</pre>
                     addDNSServer('8.8.4.4');
                 }
                 
+                console.log('✅ 网络配置加载完成');
                 showMessage('✅ 网络配置加载成功', 'success');
             } catch (error) {
-                console.error('加载网络配置失败:', error);
+                console.error('❌ 加载网络配置失败:', error);
                 showMessage('❌ 加载网络配置失败: ' + error.message, 'error');
             }
         }
@@ -4104,59 +4435,22 @@ curl http://localhost:8080/api/health</pre>
             document.getElementById('nextCheckTime').textContent = nextCheck.toLocaleString();
         }
 
-        // 更新switchTab函数以支持新的tab
-        function switchTab(tabName) {
-            // 隐藏所有tab内容
-            const tabs = document.querySelectorAll('.tab-pane');
-            tabs.forEach(tab => tab.classList.remove('active'));
-            
-            // 移除所有tab按钮的active类
-            const buttons = document.querySelectorAll('.tab-button');
-            buttons.forEach(button => button.classList.remove('active'));
-            
-            // 显示选中的tab内容
-            const selectedTab = document.getElementById(tabName);
-            if (selectedTab) {
-                selectedTab.classList.add('active');
+        // 加载提示HTML结构
+        const loadingHTML = 
+            '<div id="loadingOverlay" class="loading-overlay">' +
+                '<div class="loading-content">' +
+                    '<div class="loading-spinner"></div>' +
+                    '<p class="loading-text" id="loadingText">正在处理中...</p>' +
+                '</div>' +
+            '</div>';
+
+        // 在页面加载时添加加载提示HTML
+        document.addEventListener('DOMContentLoaded', function() {
+            // 添加加载提示HTML到页面
+            if (!document.getElementById('loadingOverlay')) {
+                document.body.insertAdjacentHTML('beforeend', loadingHTML);
             }
-            
-            // 激活对应的tab按钮
-            const selectedButton = document.querySelector('button[onclick="switchTab(\'' + tabName + '\')"]');
-            if (selectedButton) {
-                selectedButton.classList.add('active');
-            }
-            
-            // 根据选中的tab执行相应的初始化
-            switch (tabName) {
-                case 'leases':
-                    loadDevices();
-                    break;
-                case 'history':
-                    loadHistory();
-                    break;
-                case 'gateways':
-                    loadGateways();
-                    break;
-                case 'devices':
-                    loadDevices();
-                    break;
-                case 'config':
-                    loadConfigContent();
-                    break;
-                case 'ui-config':
-                    loadUIConfig();
-                    break;
-                case 'server-config':
-                    loadServerConfig();
-                    break;
-                case 'network-config':
-                    loadNetworkConfig();
-                    break;
-                case 'logs':
-                    loadLogs();
-                    break;
-            }
-        }
+        });
 
     </script>
 </body>
@@ -4306,6 +4600,7 @@ func (api *APIServer) handleGetGateways(w http.ResponseWriter, r *http.Request) 
 			"ip":          gateway.IP,
 			"is_default":  gateway.IsDefault,
 			"description": gateway.Description,
+			"dns_servers": gateway.DNSServers,
 		}
 	}
 
@@ -4315,10 +4610,11 @@ func (api *APIServer) handleGetGateways(w http.ResponseWriter, r *http.Request) 
 // handleAddGateway 添加网关
 func (api *APIServer) handleAddGateway(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Name        string `json:"name"`
-		IP          string `json:"ip"`
-		IsDefault   bool   `json:"is_default"`
-		Description string `json:"description"`
+		Name        string   `json:"name"`
+		IP          string   `json:"ip"`
+		IsDefault   bool     `json:"is_default"`
+		Description string   `json:"description"`
+		DNSServers  []string `json:"dns_servers"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -4339,6 +4635,15 @@ func (api *APIServer) handleAddGateway(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid IP address format"})
 		return
+	}
+
+	// 验证DNS服务器地址格式
+	for _, dns := range request.DNSServers {
+		if dns != "" && net.ParseIP(dns) == nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid DNS server address: " + dns})
+			return
+		}
 	}
 
 	// 检查网关名称是否已存在
@@ -4368,6 +4673,7 @@ func (api *APIServer) handleAddGateway(w http.ResponseWriter, r *http.Request) {
 		IP:          request.IP,
 		IsDefault:   request.IsDefault,
 		Description: request.Description,
+		DNSServers:  request.DNSServers,
 	}
 
 	api.config.Gateways = append(api.config.Gateways, newGateway)
@@ -4389,11 +4695,12 @@ func (api *APIServer) handleAddGateway(w http.ResponseWriter, r *http.Request) {
 // handleUpdateGateway 更新网关
 func (api *APIServer) handleUpdateGateway(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Name        string `json:"name"`
-		IP          string `json:"ip"`
-		IsDefault   bool   `json:"is_default"`
-		Description string `json:"description"`
-		OldName     string `json:"old_name"` // 用于标识要更新的网关
+		Name        string   `json:"name"`
+		IP          string   `json:"ip"`
+		IsDefault   bool     `json:"is_default"`
+		Description string   `json:"description"`
+		DNSServers  []string `json:"dns_servers"`
+		OldName     string   `json:"old_name"` // 用于标识要更新的网关
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -4414,6 +4721,15 @@ func (api *APIServer) handleUpdateGateway(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Invalid IP address format"})
 		return
+	}
+
+	// 验证DNS服务器地址格式
+	for _, dns := range request.DNSServers {
+		if dns != "" && net.ParseIP(dns) == nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid DNS server address: " + dns})
+			return
+		}
 	}
 
 	// 查找要更新的网关
@@ -4461,6 +4777,7 @@ func (api *APIServer) handleUpdateGateway(w http.ResponseWriter, r *http.Request
 	api.config.Gateways[gatewayIndex].IP = request.IP
 	api.config.Gateways[gatewayIndex].IsDefault = request.IsDefault
 	api.config.Gateways[gatewayIndex].Description = request.Description
+	api.config.Gateways[gatewayIndex].DNSServers = request.DNSServers
 
 	// 保存配置
 	if err := api.config.SaveConfig(api.configPath); err != nil {
@@ -5859,6 +6176,28 @@ func (api *APIServer) handleServerConfig(w http.ResponseWriter, r *http.Request)
 			return
 		}
 
+		// 验证API监听地址
+		if newServerConfig.APIHost != "" {
+			if newServerConfig.APIHost != "0.0.0.0" && newServerConfig.APIHost != "localhost" && net.ParseIP(newServerConfig.APIHost) == nil {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{"error": "无效的API监听地址，请输入有效的IP地址、0.0.0.0或localhost"})
+				return
+			}
+		}
+
+		// 验证租期时间格式
+		if newServerConfig.LeaseTime != 0 {
+			// 将秒数转换为time.Duration
+			leaseTime := time.Duration(newServerConfig.LeaseTime) * time.Second
+			if leaseTime < time.Minute {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]string{"error": "租期时间不能少于1分钟"})
+				return
+			}
+			// 更新为正确的time.Duration格式
+			newServerConfig.LeaseTime = leaseTime
+		}
+
 		// 更新配置
 		api.config.Server = newServerConfig
 
@@ -5869,10 +6208,24 @@ func (api *APIServer) handleServerConfig(w http.ResponseWriter, r *http.Request)
 			return
 		}
 
+		// 检查是否需要重启提示
+		needRestart := false
+		if api.config.Server.APIHost != newServerConfig.APIHost {
+			needRestart = true
+		}
+		if api.config.Server.LeaseTime != newServerConfig.LeaseTime {
+			needRestart = true
+		}
+
 		response := map[string]interface{}{
 			"success": true,
 			"message": "服务器配置更新成功",
 			"config":  api.config.Server,
+		}
+
+		if needRestart {
+			response["message"] = "服务器配置更新成功，API监听地址已修改，请重启服务器以应用新配置"
+			response["restart_required"] = true
 		}
 		json.NewEncoder(w).Encode(response)
 	default:

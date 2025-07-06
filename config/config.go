@@ -28,6 +28,7 @@ type ServerConfig struct {
 	Port      int           `yaml:"port" json:"port"`
 	LeaseTime time.Duration `yaml:"lease_time" json:"lease_time"`
 	APIPort   int           `yaml:"api_port" json:"api_port"`
+	APIHost   string        `yaml:"api_host" json:"api_host"` // API监听地址
 	LogLevel  string        `yaml:"log_level" json:"log_level"`
 	LogFile   string        `yaml:"log_file" json:"log_file"`
 	Debug     bool          `yaml:"debug" json:"debug"`
@@ -52,10 +53,11 @@ type NetworkConfig struct {
 
 // Gateway 网关配置
 type Gateway struct {
-	Name        string `yaml:"name"`
-	IP          string `yaml:"ip"`
-	IsDefault   bool   `yaml:"is_default"`
-	Description string `yaml:"description"`
+	Name        string   `yaml:"name"`
+	IP          string   `yaml:"ip"`
+	IsDefault   bool     `yaml:"is_default"`
+	Description string   `yaml:"description"`
+	DNSServers  []string `yaml:"dns_servers" json:"dns_servers"` // 网关专用DNS服务器
 }
 
 // MACBinding MAC地址绑定配置
@@ -152,6 +154,14 @@ func (c *Config) Validate() error {
 		}
 		if net.ParseIP(binding.IP) == nil {
 			return fmt.Errorf("无效的绑定IP: %s", binding.IP)
+		}
+	}
+
+	// 验证API监听地址
+	if c.Server.APIHost != "" {
+		// 如果配置了APIHost，验证其有效性
+		if c.Server.APIHost != "0.0.0.0" && net.ParseIP(c.Server.APIHost) == nil {
+			return fmt.Errorf("无效的API监听地址: %s", c.Server.APIHost)
 		}
 	}
 

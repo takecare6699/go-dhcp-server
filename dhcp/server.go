@@ -475,17 +475,40 @@ func (s *Server) addNetworkOptions(resp *dhcpv4.DHCPv4, lease *IPLease) {
 		}
 	}
 
-	// DNS服务器
-	if len(s.config.Network.DNSServers) > 0 {
-		var dnsServers []net.IP
-		for _, dns := range s.config.Network.DNSServers {
+	// DNS服务器 - 优先使用网关的DNS，然后合并网络配置的DNS
+	var dnsServers []net.IP
+
+	// 如果网关配置了DNS，优先使用网关的DNS
+	if gateway != nil && len(gateway.DNSServers) > 0 {
+		for _, dns := range gateway.DNSServers {
 			if ip := net.ParseIP(dns); ip != nil {
 				dnsServers = append(dnsServers, ip.To4())
 			}
 		}
-		if len(dnsServers) > 0 {
-			resp.UpdateOption(dhcpv4.OptDNS(dnsServers...))
+		log.Printf("为客户端分配网关专用DNS: %v", gateway.DNSServers)
+	}
+
+	// 合并网络配置中的DNS（避免重复）
+	if len(s.config.Network.DNSServers) > 0 {
+		for _, dns := range s.config.Network.DNSServers {
+			if ip := net.ParseIP(dns); ip != nil {
+				// 检查是否已经存在
+				exists := false
+				for _, existingIP := range dnsServers {
+					if existingIP.Equal(ip.To4()) {
+						exists = true
+						break
+					}
+				}
+				if !exists {
+					dnsServers = append(dnsServers, ip.To4())
+				}
+			}
 		}
+	}
+
+	if len(dnsServers) > 0 {
+		resp.UpdateOption(dhcpv4.OptDNS(dnsServers...))
 	}
 
 	// 域名
