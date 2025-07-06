@@ -254,8 +254,14 @@ func (s *Server) handleRequest(req *dhcpv4.DHCPv4) (*dhcpv4.DHCPv4, error) {
 	// 检查租约是否存在且有效
 	lease, exists := s.pool.GetLease(requestedIP.String())
 	if !exists || lease.MAC != clientMAC {
-		log.Printf("DHCP Request: 租约不存在或MAC地址不匹配")
-		return s.createNAK(req, "租约不存在"), nil
+		// 如果请求的IP不存在，尝试根据MAC地址查找租约
+		if leaseByMAC, existsByMAC := s.pool.GetLeaseByMAC(clientMAC); existsByMAC {
+			log.Printf("DHCP Request: 设备请求IP %s，但分配的IP是 %s，使用分配的IP", requestedIP, leaseByMAC.IP)
+			lease = leaseByMAC
+		} else {
+			log.Printf("DHCP Request: 租约不存在或MAC地址不匹配")
+			return s.createNAK(req, "租约不存在"), nil
+		}
 	}
 
 	// 更新租约时间
@@ -473,18 +479,22 @@ func (s *Server) getServerIP() net.IP {
 	// 简化实现，可以从配置中获取或自动检测
 	interfaces, err := net.Interfaces()
 	if err != nil {
+		log.Printf("获取网络接口失败: %v", err)
 		return net.ParseIP("192.168.1.1") // 默认值
 	}
 
 	for _, iface := range interfaces {
 		if iface.Name == s.config.Server.Interface {
+			log.Printf("检查接口 %s 的IP地址", iface.Name)
 			addrs, err := iface.Addrs()
 			if err != nil {
+				log.Printf("获取接口 %s 地址失败: %v", iface.Name, err)
 				continue
 			}
 			for _, addr := range addrs {
 				if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
 					if ipnet.IP.To4() != nil {
+						log.Printf("检测到服务器IP: %s", ipnet.IP.To4())
 						return ipnet.IP.To4()
 					}
 				}
@@ -494,9 +504,12 @@ func (s *Server) getServerIP() net.IP {
 
 	// 如果无法自动检测，返回网络配置中的第一个网关作为服务器IP
 	if len(s.config.Gateways) > 0 {
-		return net.ParseIP(s.config.Gateways[0].IP)
+		serverIP := net.ParseIP(s.config.Gateways[0].IP)
+		log.Printf("使用默认网关作为服务器IP: %s", serverIP)
+		return serverIP
 	}
 
+	log.Printf("使用默认服务器IP: 192.168.1.1")
 	return net.ParseIP("192.168.1.1") // 最后的默认值
 }
 
