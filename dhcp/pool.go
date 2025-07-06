@@ -92,9 +92,16 @@ func (pool *IPPool) initStaticBindings() error {
 			return fmt.Errorf("静态绑定中的IP地址无效: %s", binding.IP)
 		}
 
+		// 标准化MAC地址格式
+		mac, err := net.ParseMAC(binding.MAC)
+		if err != nil {
+			return fmt.Errorf("静态绑定中的MAC地址无效: %s", binding.MAC)
+		}
+		macStr := mac.String()
+
 		lease := &IPLease{
 			IP:        ip.To4(),
-			MAC:       binding.MAC,
+			MAC:       macStr,
 			Hostname:  binding.Hostname,
 			StartTime: time.Now(),
 			IsStatic:  true,
@@ -103,10 +110,10 @@ func (pool *IPPool) initStaticBindings() error {
 
 		ipStr := ip.String()
 		pool.leases[ipStr] = lease
-		pool.macToIP[binding.MAC] = ipStr
+		pool.macToIP[macStr] = ipStr
 
 		log.Printf("添加静态绑定: %s (%s) -> %s, 网关: %s",
-			binding.Alias, binding.MAC, binding.IP, binding.Gateway)
+			binding.Alias, macStr, binding.IP, binding.Gateway)
 	}
 
 	return nil
