@@ -75,6 +75,7 @@ type APIServer struct {
 	config     *config.Config // 添加配置引用
 	configPath string         // 配置文件路径
 	dhcpServer *dhcp.Server
+	scanner    *dhcp.NetworkScanner // 网络扫描器
 	port       int
 	host       string // API监听地址
 	server     *http.Server
@@ -122,7 +123,7 @@ type ServerInfo struct {
 }
 
 // NewAPIServer 创建新的API服务器
-func NewAPIServer(pool *dhcp.IPPool, checker *gateway.HealthChecker, cfg *config.Config, configPath string, dhcpServer *dhcp.Server, port int) *APIServer {
+func NewAPIServer(pool *dhcp.IPPool, checker *gateway.HealthChecker, cfg *config.Config, configPath string, dhcpServer *dhcp.Server, scanner *dhcp.NetworkScanner, port int) *APIServer {
 	// 获取API监听地址，如果为空则使用默认值 0.0.0.0
 	host := cfg.Server.APIHost
 	if host == "" {
@@ -135,6 +136,7 @@ func NewAPIServer(pool *dhcp.IPPool, checker *gateway.HealthChecker, cfg *config
 		config:     cfg,
 		configPath: configPath,
 		dhcpServer: dhcpServer,
+		scanner:    scanner,
 		port:       port,
 		host:       host,
 	}
@@ -146,11 +148,12 @@ func (api *APIServer) SetReloadCallback(callback func(*config.Config) error) {
 }
 
 // UpdateReferences 更新组件引用（用于热重载）
-func (api *APIServer) UpdateReferences(pool *dhcp.IPPool, checker *gateway.HealthChecker, cfg *config.Config, dhcpServer *dhcp.Server) {
+func (api *APIServer) UpdateReferences(pool *dhcp.IPPool, checker *gateway.HealthChecker, cfg *config.Config, dhcpServer *dhcp.Server, scanner *dhcp.NetworkScanner) {
 	api.pool = pool
 	api.checker = checker
 	api.config = cfg
 	api.dhcpServer = dhcpServer
+	api.scanner = scanner
 
 	// 更新API监听地址
 	host := cfg.Server.APIHost
@@ -198,6 +201,14 @@ func (api *APIServer) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/leases/active", api.handleActiveLeases)
 	mux.HandleFunc("/api/leases/history", api.handleHistory)
 	mux.HandleFunc("/api/stats", api.handleStats)
+
+	// 扫描器相关路由
+	mux.HandleFunc("/api/scanner", api.handleScanner)
+	mux.HandleFunc("/api/scanner/results", api.handleScannerResults)
+	mux.HandleFunc("/api/scanner/log", api.handleScannerLog)
+	mux.HandleFunc("/api/scanner/start", api.handleScannerStart)
+	mux.HandleFunc("/api/scanner/stop", api.handleScannerStop)
+	mux.HandleFunc("/api/scanner/config", api.handleScannerConfig)
 	mux.HandleFunc("/api/gateways", api.handleGateways)
 
 	// 设备管理相关端点
@@ -559,12 +570,12 @@ func (api *APIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
         .status-healthy { background: #d4edda; color: #155724; }
         .status-unhealthy { background: #f8d7da; color: #721c24; }
         .auto-refresh { display: flex; align-items: center; gap: 0.5rem; margin-left: auto; }
-        .config-editor { display: grid; grid-template-columns: 1fr 300px; gap: 1.5rem; height: 600px; }
-        .editor-panel { display: flex; flex-direction: column; }
-        .editor-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #e9ecef; }
-        .editor-textarea { flex: 1; font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace; font-size: 14px; line-height: 1.5; padding: 1rem; border: 2px solid #e9ecef; border-radius: 8px; resize: none; background: #f8f9fa; color: #333; }
+        .config-editor { display: grid; grid-template-columns: 1fr 300px; gap: 1.5rem; height: 80vh; max-height: 800px; overflow: hidden; }
+        .editor-panel { display: flex; flex-direction: column; overflow: hidden; }
+        .editor-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; padding-bottom: 0.5rem; border-bottom: 1px solid #e9ecef; flex-shrink: 0; }
+        .editor-textarea { flex: 1; font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace; font-size: 14px; line-height: 1.5; padding: 1rem; border: 2px solid #e9ecef; border-radius: 8px; resize: none; background: #f8f9fa; color: #333; overflow-y: auto; min-height: 400px; }
         .editor-textarea:focus { outline: none; border-color: #667eea; }
-        .sidebar-panel { display: flex; flex-direction: column; gap: 1.5rem; }
+        .sidebar-panel { display: flex; flex-direction: column; gap: 1.5rem; overflow-y: auto; max-height: 100%; }
         .panel-section { background: #f8f9fa; padding: 1rem; border-radius: 8px; border: 1px solid #e9ecef; }
         .panel-title { font-weight: 600; margin-bottom: 1rem; color: #495057; }
         .validation-result { padding: 0.8rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem; }
@@ -582,10 +593,10 @@ func (api *APIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
         .status-indicator.healthy { background: #28a745; }
         .status-indicator.unhealthy { background: #dc3545; }
         .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); }
-        .modal-content { background-color: white; margin: 5% auto; padding: 0; border-radius: 12px; width: 500px; max-width: 90%; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+        .modal-content { background-color: white; margin: 5% auto; padding: 0; border-radius: 12px; width: 500px; max-width: 90%; max-height: 80vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
         .modal-header { padding: 1.5rem; border-bottom: 1px solid #e9ecef; border-radius: 12px 12px 0 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
         .modal-title { margin: 0; font-size: 1.25rem; font-weight: 600; }
-        .modal-body { padding: 1.5rem; }
+        .modal-body { padding: 1.5rem; max-height: 60vh; overflow-y: auto; }
         .modal-footer { padding: 1rem 1.5rem; border-top: 1px solid #e9ecef; display: flex; justify-content: flex-end; gap: 0.5rem; }
         .close { color: white; float: right; font-size: 28px; font-weight: bold; cursor: pointer; line-height: 1; }
         .close:hover { opacity: 0.7; }
@@ -842,7 +853,21 @@ func (api *APIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
         body.dark-theme .config-section h3 { color: #4a90e2; }
         
         @media (max-width: 768px) { .container { padding: 10px; } .header { padding: 1rem; margin-bottom: 1rem; } .header h1 { font-size: 1.4rem; } .header p { font-size: 0.85rem; } .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 0.8rem; margin-bottom: 1rem; } .stat-card { padding: 0.8rem; } .stat-value { font-size: 1.3rem; } .stat-label { font-size: 0.75rem; } .tab-content { padding: 1rem; min-height: 500px; } .controls { flex-direction: column; align-items: stretch; } .search-box { width: 100%; } .table { font-size: 0.8rem; } .modal-content { width: 95%; margin: 2% auto; } .confirm-modal-content { width: 95%; margin: 10% auto; } }
-        @media (max-width: 1024px) { .config-editor { grid-template-columns: 1fr; height: auto; } .editor-textarea { height: 400px; } }
+        @media (max-width: 1024px) { 
+            .config-editor { 
+                grid-template-columns: 1fr; 
+                height: auto; 
+                max-height: none; 
+            } 
+            .editor-textarea { 
+                height: 50vh; 
+                min-height: 300px; 
+            } 
+            .sidebar-panel { 
+                max-height: none; 
+                overflow-y: visible; 
+            } 
+        }
         
         /* 配置表单样式 */
         .config-form { max-width: 800px; margin: 0 auto; }
@@ -1104,6 +1129,7 @@ func (api *APIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
                         <div class="config-tab-buttons">
                             <button class="config-tab-button active" onclick="switchConfigSubTab('network-config')">🌐 网络配置</button>
                             <button class="config-tab-button" onclick="switchConfigSubTab('gateway-detection')">🚀 网关检测</button>
+                            <button class="config-tab-button" onclick="switchConfigSubTab('network-scanner')">🔍 网络扫描器</button>
                             <button class="config-tab-button" onclick="switchConfigSubTab('file-management')">📁 配置文件管理</button>
                         </div>
                         
@@ -1172,7 +1198,7 @@ func (api *APIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
                                         </div>
                                         <div class="form-actions">
                                             <button type="button" class="btn btn-primary" onclick="saveNetworkConfig()">保存网络配置</button>
-                                            <button type="button" class="btn btn-secondary" onclick="loadNetworkConfig()">重新加载</button>
+                                            <button type="button" class="btn btn-secondary" onclick="loadNetworkConfig(true)">重新加载</button>
                                         </div>
                                     </form>
                                 </div>
@@ -1248,8 +1274,121 @@ func (api *APIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
                                         
                                         <div class="form-actions">
                                             <button type="button" class="btn btn-primary" onclick="saveGatewayDetectionConfig()">保存检测配置</button>
-                                            <button type="button" class="btn btn-secondary" onclick="loadGatewayDetectionConfig()">重新加载</button>
+                                            <button type="button" class="btn btn-secondary" onclick="loadGatewayDetectionConfig(true)">重新加载</button>
                                             <button type="button" class="btn btn-warning" onclick="testGatewayDetection()">测试检测</button>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+                            
+                            <!-- 网络扫描器子标签页 -->
+                            <div id="network-scanner" class="config-sub-pane">
+                                <div class="config-form">
+                                    <h3>🔍 网络扫描器配置</h3>
+                                    <form id="networkScannerForm">
+                                        <div class="config-section">
+                                            <h4>扫描设置</h4>
+                                            <div class="form-group">
+                                                <label for="scannerEnabled">启用网络扫描</label>
+                                                <select id="scannerEnabled" class="form-control">
+                                                    <option value="true">启用</option>
+                                                    <option value="false">禁用</option>
+                                                </select>
+                                                <small class="form-help">启用后系统将定期扫描网络以发现设备和检测IP冲突</small>
+                                            </div>
+                                            <div class="form-group">
+                                                <label for="scannerInterval">扫描间隔 (秒)</label>
+                                                <input type="number" id="scannerInterval" class="form-control" placeholder="300" min="60" max="3600">
+                                                <small class="form-help">扫描间隔时间，建议设置为300秒（5分钟）</small>
+                                            </div>
+                                            <div class="form-group">
+                                                <label for="scannerConcurrency">并发扫描数</label>
+                                                <input type="number" id="scannerConcurrency" class="form-control" placeholder="10" min="1" max="100">
+                                                <small class="form-help">同时扫描的IP数量，建议设置为10-20</small>
+                                            </div>
+                                            <div class="form-group">
+                                                <label for="scannerTimeout">扫描超时 (秒)</label>
+                                                <input type="number" id="scannerTimeout" class="form-control" placeholder="3" min="1" max="30">
+                                                <small class="form-help">单个IP扫描的超时时间</small>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="config-section">
+                                            <h4>扫描范围</h4>
+                                            <div class="form-group">
+                                                <label>扫描范围</label>
+                                                <div class="info-display">
+                                                    <span id="scannerRangeDisplay">自动使用DHCP可分配地址范围</span>
+                                                </div>
+                                                <small class="form-help">扫描器会自动扫描DHCP服务器可分配的IP地址范围</small>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="config-section">
+                                            <h4>冲突处理</h4>
+                                            <div class="form-group">
+                                                <label for="scannerConflictAction">IP冲突处理方式</label>
+                                                <select id="scannerConflictAction" class="form-control">
+                                                    <option value="mark_conflicted">标记为冲突</option>
+                                                    <option value="ignore">忽略冲突</option>
+                                                </select>
+                                                <small class="form-help">发现IP冲突时的处理方式</small>
+                                            </div>
+                                            <div class="form-group">
+                                                <label for="scannerConflictTimeout">冲突标记超时 (分钟)</label>
+                                                <input type="number" id="scannerConflictTimeout" class="form-control" placeholder="30" min="5" max="1440">
+                                                <small class="form-help">冲突IP标记的超时时间，超时后重新可用</small>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="config-section">
+                                            <h4>扫描状态</h4>
+                                            <div class="form-group">
+                                                <label>当前扫描状态</label>
+                                                <div id="currentScannerStatus" class="status-display">
+                                                    <div class="status-item">
+                                                        <span class="status-label">扫描器状态：</span>
+                                                        <span class="status-value" id="scannerServiceStatus">--</span>
+                                                    </div>
+                                                    <div class="status-item">
+                                                        <span class="status-label">扫描进度：</span>
+                                                        <span class="status-value" id="scanProgress">0%</span>
+                                                    </div>
+                                                    <div class="status-item">
+                                                        <span class="status-label">当前扫描：</span>
+                                                        <span class="status-value" id="currentScanIP">--</span>
+                                                    </div>
+                                                    <div class="status-item">
+                                                        <span class="status-label">已扫描：</span>
+                                                        <span class="status-value" id="scannedIPs">0/0</span>
+                                                    </div>
+                                                    <div class="status-item">
+                                                        <span class="status-label">发现设备数量：</span>
+                                                        <span class="status-value" id="discoveredDevicesCount">0</span>
+                                                    </div>
+                                                    <div class="status-item">
+                                                        <span class="status-label">冲突IP数量：</span>
+                                                        <span class="status-value" id="conflictedIPsCount">0</span>
+                                                    </div>
+                                                    <div class="status-item">
+                                                        <span class="status-label">上次扫描时间：</span>
+                                                        <span class="status-value" id="lastScanTime">--</span>
+                                                    </div>
+                                                    <div class="status-item">
+                                                        <span class="status-label">下次扫描时间：</span>
+                                                        <span class="status-value" id="nextScanTime">--</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="form-actions">
+                                            <button type="button" class="btn btn-primary" onclick="saveNetworkScannerConfig()">保存扫描器配置</button>
+                                            <button type="button" class="btn btn-secondary" onclick="loadNetworkScannerConfig(true)">重新加载</button>
+                                            <button type="button" class="btn btn-success" onclick="startNetworkScanner()">启动扫描</button>
+                                            <button type="button" class="btn btn-warning" onclick="stopNetworkScanner()">停止扫描</button>
+                                            <button type="button" class="btn btn-info" onclick="viewScannerResults()">查看扫描结果</button>
+                                            <button type="button" class="btn btn-secondary" onclick="viewScannerLog()">查看扫描日志</button>
                                         </div>
                                     </form>
                                 </div>
@@ -1364,11 +1503,17 @@ func (api *APIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
                                         <input type="checkbox" id="serverDebug"> 调试模式
                                     </label>
                                 </div>
+                                <div class="form-group">
+                                    <label>
+                                        <input type="checkbox" id="serverAllowAnyServerIP"> 允许响应任意ServerIP（不建议，除非有特殊需求）
+                                    </label>
+                                    <small class="form-help">开启后，DHCP服务器会响应所有ServerIP的Request请求，兼容部分特殊网络环境。</small>
+                                </div>
                             </div>
 
                             <div class="form-actions">
                                 <button type="button" class="btn btn-primary" onclick="saveServerConfig()">保存服务器配置</button>
-                                <button type="button" class="btn btn-secondary" onclick="loadServerConfig()">重新加载</button>
+                                <button type="button" class="btn btn-secondary" onclick="loadServerConfig(true)">重新加载</button>
                             </div>
                         </form>
                     </div>
@@ -1558,6 +1703,7 @@ sudo ./dhcp-server -config my-config.yaml
                                 <ul>
                                     <li><strong>网络配置</strong>: 设置IP地址池、DNS服务器、域名等</li>
                                     <li><strong>网关检测</strong>: 配置健康检查参数</li>
+                                    <li><strong>网络扫描器</strong>: 配置网络扫描和IP冲突检测</li>
                                     <li><strong>配置备份</strong>: 自动备份和一键恢复配置</li>
                                     <li><strong>热重载</strong>: 无需重启即可应用配置更改</li>
                                 </ul>
@@ -1571,6 +1717,7 @@ sudo ./dhcp-server -config my-config.yaml
                                     <li><strong>自动刷新</strong>: 设置数据自动刷新间隔</li>
                                     <li><strong>紧凑模式</strong>: 在有限屏幕空间中显示更多信息</li>
                                     <li><strong>界面记忆</strong>: 自动保存用户的界面偏好设置</li>
+                                    <li><strong>高级功能</strong>: 显示或隐藏高级配置选项</li>
                                 </ul>
                             </div>
                         </div>
@@ -1627,6 +1774,19 @@ sudo ./dhcp-server -config my-config.yaml
                                 </ol>
                                 <p><strong>建议</strong>: 修改重要配置前先创建备份，以便出现问题时快速恢复。</p>
                             </div>
+
+                            <div class="help-card">
+                                <h3>🔍 网络扫描器配置</h3>
+                                <ol>
+                                    <li>进入"配置管理" → "网络扫描器"</li>
+                                    <li>启用网络扫描功能</li>
+                                    <li>设置扫描间隔时间（建议300秒）</li>
+                                    <li>配置并发扫描数量（建议10-20）</li>
+                                    <li>设置IP冲突处理方式</li>
+                                    <li>保存配置并启动扫描</li>
+                                </ol>
+                                <p><strong>说明</strong>: 扫描器会自动扫描DHCP可分配IP范围，检测设备活动和IP冲突。</p>
+                            </div>
                         </div>
 
                         <!-- 故障排除 -->
@@ -1678,6 +1838,18 @@ sudo ./dhcp-server -config my-config.yaml
                                     <li><strong>服务状态</strong>: 检查HTTP API服务是否启动成功</li>
                                     <li><strong>日志查看</strong>: 查看启动日志确认服务状态</li>
                                     <li><strong>端口冲突</strong>: 检查端口是否被其他程序占用</li>
+                                </ul>
+                            </div>
+
+                            <div class="help-card">
+                                <h3>🔍 网络扫描器问题</h3>
+                                <p><strong>常见问题：</strong></p>
+                                <ul>
+                                    <li><strong>扫描结果为空</strong>: 检查网络环境，确认有设备在DHCP范围内</li>
+                                    <li><strong>扫描器状态异常</strong>: 重启扫描器或检查配置参数</li>
+                                    <li><strong>IP冲突检测</strong>: 查看扫描日志了解冲突详情</li>
+                                    <li><strong>扫描性能</strong>: 调整并发数量以优化扫描性能</li>
+                                    <li><strong>扫描器死锁</strong>: 重启服务器或检查扫描器配置</li>
                                 </ul>
                             </div>
                         </div>
@@ -2043,7 +2215,7 @@ curl http://localhost:8080/api/health</pre>
                     const networkConfigTab = document.getElementById('network-config');
                     if (networkConfigTab && networkConfigTab.classList.contains('active')) {
                         console.log('🔄 页面加载时自动加载网络配置...');
-                        loadNetworkConfig();
+                        loadNetworkConfig(false);
                     }
                 }
             }, 100);
@@ -2139,7 +2311,7 @@ curl http://localhost:8080/api/health</pre>
                     loadDevices();
                     break;
                 case 'server-config':
-                    loadServerConfig();
+                    loadServerConfig(false);
                     break;
                 case 'config':
                     // 默认切换到网络配置子标签页
@@ -2169,14 +2341,18 @@ curl http://localhost:8080/api/health</pre>
             // 加载对应的数据
             switch(subTabName) {
                 case 'network-config':
-                    loadNetworkConfig();
+                    loadNetworkConfig(false);
                     break;
                 case 'file-management':
                     loadConfigContent();
                     loadBackups();
                     break;
                 case 'gateway-detection':
-                    loadGatewayDetectionConfig();
+                    loadGatewayDetectionConfig(false);
+                    break;
+                case 'network-scanner':
+                    loadNetworkScannerConfig(false);
+                    updateScannerStatus();
                     break;
             }
         }
@@ -2947,7 +3123,7 @@ curl http://localhost:8080/api/health</pre>
                 const result = await response.json();
                 
                 if (result.success) {
-                    showMessage(result.message, 'success');
+                    showBeautifulConfirm('✅ 保存成功', result.message, 'info');
                     configContent = content;
                     if (autoReload) {
                         setTimeout(() => {
@@ -2955,10 +3131,10 @@ curl http://localhost:8080/api/health</pre>
                         }, 1000);
                     }
                 } else {
-                    showMessage(result.error || '保存失败', 'error');
+                    showBeautifulConfirm('❌ 保存失败', result.error || '保存配置文件时发生错误', 'danger');
                 }
             } catch (error) {
-                showMessage('保存配置失败: ' + error.message, 'error');
+                showBeautifulConfirm('❌ 保存失败', '保存配置文件时发生错误：\\n' + error.message, 'danger');
             }
         }
 
@@ -3050,16 +3226,16 @@ curl http://localhost:8080/api/health</pre>
                 const result = await response.json();
                 
                 if (result.success) {
-                    showMessage(result.message, 'success');
+                    showBeautifulConfirm('✅ 重载成功', result.message, 'info');
                     setTimeout(() => {
                         loadStats();
                         loadGatewayStatus();
                     }, 2000);
                 } else {
-                    showMessage(result.error || '重载失败', 'error');
+                    showBeautifulConfirm('❌ 重载失败', result.error || '重载失败', 'danger');
                 }
             } catch (error) {
-                showMessage('重载配置失败: ' + error.message, 'error');
+                showBeautifulConfirm('❌ 重载失败', '重载配置失败: ' + error.message, 'danger');
             }
         }
 
@@ -3267,16 +3443,16 @@ curl http://localhost:8080/api/health</pre>
                 });
                 
                 if (response.ok) {
-                    showMessage('设备添加成功！', 'success');
+                    showBeautifulConfirm('✅ 添加成功', '设备信息已成功添加！', 'info');
                     closeDeviceModal();
                     loadDevices();
                 } else {
                     const error = await response.text();
-                    showMessage('设备添加失败: ' + error, 'error');
+                    showBeautifulConfirm('❌ 添加失败', '添加设备时发生错误：\\n' + error, 'danger');
                 }
             } catch (error) {
                 console.error('添加设备失败:', error);
-                showMessage('添加设备失败: ' + error.message, 'error');
+                showBeautifulConfirm('❌ 添加失败', '添加设备时发生错误：\\n' + error.message, 'danger');
             }
         }
 
@@ -3310,16 +3486,16 @@ curl http://localhost:8080/api/health</pre>
                 });
                 
                 if (response.ok) {
-                    showMessage('设备信息更新成功！', 'success');
+                    showBeautifulConfirm('✅ 更新成功', '设备信息已成功更新！', 'info');
                     closeDeviceModal();
                     loadDevices();
                 } else {
                     const error = await response.text();
-                    showMessage('设备信息更新失败: ' + error, 'error');
+                    showBeautifulConfirm('❌ 更新失败', '更新设备信息时发生错误：\\n' + error, 'danger');
                 }
             } catch (error) {
                 console.error('更新设备信息失败:', error);
-                showMessage('更新设备信息失败: ' + error.message, 'error');
+                showBeautifulConfirm('❌ 更新失败', '更新设备信息时发生错误：\\n' + error.message, 'danger');
             }
         }
 
@@ -3350,16 +3526,16 @@ curl http://localhost:8080/api/health</pre>
                 hideLoading(); // 隐藏加载提示
                 
                 if (response.ok) {
-                    showMessage('✅ 设备删除成功', 'success');
+                    showBeautifulConfirm('✅ 删除成功', '设备已成功删除！', 'info');
                     loadDevices();
                 } else {
                     const error = await response.text();
-                    showMessage('❌ 设备删除失败: ' + error, 'error');
+                    showBeautifulConfirm('❌ 删除失败', '删除设备时发生错误：\\n' + error, 'danger');
                 }
             } catch (error) {
                 hideLoading(); // 隐藏加载提示
                 console.error('删除设备失败:', error);
-                showMessage('❌ 设备删除失败: ' + error.message, 'error');
+                showBeautifulConfirm('❌ 删除失败', '删除设备时发生错误：\\n' + error.message, 'danger');
             }
         }
 
@@ -3475,17 +3651,17 @@ curl http://localhost:8080/api/health</pre>
                 hideLoading(); // 隐藏加载提示
                 
                 if (response.ok) {
-                    showMessage('✅ 租约转换为静态IP成功！设备重新连接后生效。别名: ' + alias, 'success');
+                    showBeautifulConfirm('✅ 转换成功', '租约转换为静态IP成功！设备重新连接后生效。别名: ' + alias, 'info');
                     loadDevices(); // 刷新设备列表
                     // 移除 loadLeases() 调用，因为在设备管理页面不存在此函数
                 } else {
                     const errorData = await response.json();
-                    showMessage('❌ 转换失败: ' + (errorData.error || '未知错误'), 'error');
+                    showBeautifulConfirm('❌ 转换失败', errorData.error || '未知错误', 'danger');
                 }
             } catch (error) {
                 hideLoading(); // 隐藏加载提示
                 console.error('转换静态IP失败:', error);
-                showMessage('❌ 转换失败: ' + error.message, 'error');
+                showBeautifulConfirm('❌ 转换失败', '转换失败: ' + error.message, 'danger');
             }
         }
 
@@ -3537,14 +3713,14 @@ curl http://localhost:8080/api/health</pre>
         async function deleteStaticIP(mac) {
             const device = allDevices.find(d => d.mac === mac);
             if (!device || !device.has_static_ip) {
-                showMessage('设备未找到或没有静态IP绑定', 'error');
+                showBeautifulConfirm('❌ 删除失败', '设备未找到或没有静态IP绑定', 'danger');
                 return;
             }
             
             // 从缓存中获取静态绑定信息
             const binding = staticBindings[mac];
             if (!binding) {
-                showMessage('未找到对应的静态绑定信息', 'error');
+                showBeautifulConfirm('❌ 删除失败', '未找到对应的静态绑定信息', 'danger');
                 return;
             }
             
@@ -3574,17 +3750,17 @@ curl http://localhost:8080/api/health</pre>
                 hideLoading(); // 隐藏加载提示
                 
                 if (deleteResponse.ok) {
-                    showMessage('✅ 静态IP绑定删除成功！设备重新连接后将使用动态IP。', 'success');
+                    showBeautifulConfirm('✅ 删除成功', '静态IP绑定删除成功！设备重新连接后将使用动态IP。', 'info');
                     loadDevices(); // 刷新设备列表
                     // 移除 loadLeases() 调用，因为在设备管理页面不存在此函数
                 } else {
                     const errorData = await deleteResponse.json();
-                    showMessage('❌ 删除静态IP绑定失败: ' + (errorData.error || '未知错误'), 'error');
+                    showBeautifulConfirm('❌ 删除失败', errorData.error || '未知错误', 'danger');
                 }
             } catch (error) {
                 hideLoading(); // 隐藏加载提示
                 console.error('删除静态IP绑定失败:', error);
-                showMessage('❌ 删除静态IP绑定失败: ' + error.message, 'error');
+                showBeautifulConfirm('❌ 删除失败', '删除静态IP绑定失败: ' + error.message, 'danger');
             }
         }
 
@@ -3649,19 +3825,19 @@ curl http://localhost:8080/api/health</pre>
             const hostname = document.getElementById('staticHostname').value.trim();
             
             if (!alias) {
-                showMessage('绑定别名不能为空', 'error');
+                showBeautifulConfirm('❌ 验证失败', '绑定别名不能为空', 'danger');
                 return;
             }
             
             if (!ip) {
-                showMessage('IP地址不能为空', 'error');
+                showBeautifulConfirm('❌ 验证失败', 'IP地址不能为空', 'danger');
                 return;
             }
             
             // 简单的IP格式验证
             const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
             if (!ipRegex.test(ip)) {
-                showMessage('IP地址格式不正确', 'error');
+                showBeautifulConfirm('❌ 验证失败', 'IP地址格式不正确', 'danger');
                 return;
             }
             
@@ -3696,7 +3872,7 @@ curl http://localhost:8080/api/health</pre>
                 
                 if (response.ok) {
                     const action = isEditMode ? '更新' : '配置';
-                    showMessage('静态IP' + action + '成功！设备重新连接后生效。', 'success');
+                    showBeautifulConfirm('✅ ' + action + '成功', '静态IP' + action + '成功！设备重新连接后生效。', 'info');
                     closeStaticIPModal();
                     loadDevices(); // 刷新设备列表
                     
@@ -3706,13 +3882,13 @@ curl http://localhost:8080/api/health</pre>
                 } else {
                     const errorData = await response.json();
                     const action = isEditMode ? '更新' : '配置';
-                    showMessage('静态IP' + action + '失败: ' + (errorData.error || '未知错误'), 'error');
+                    showBeautifulConfirm('❌ ' + action + '失败', errorData.error || '未知错误', 'danger');
                 }
             } catch (error) {
                 hideLoading(); // 隐藏加载提示
                 const action = isEditMode ? '更新' : '配置';
                 console.error(action + '静态IP失败:', error);
-                showMessage(action + '静态IP失败: ' + error.message, 'error');
+                showBeautifulConfirm('❌ ' + action + '失败', action + '静态IP失败: ' + error.message, 'danger');
             }
         }
 
@@ -3854,16 +4030,16 @@ curl http://localhost:8080/api/health</pre>
                 hideLoading(); // 隐藏加载提示
 
                 if (response.ok) {
-                    showMessage('✅ 网关删除成功！', 'success');
+                    showBeautifulConfirm('✅ 删除成功', '网关已成功删除！', 'info');
                     loadGatewayStatus();
                 } else {
                     const errorData = await response.json();
-                    showMessage('❌ 网关删除失败: ' + (errorData.error || '未知错误'), 'error');
+                    showBeautifulConfirm('❌ 删除失败', '删除网关时发生错误：\\n' + (errorData.error || '未知错误'), 'danger');
                 }
             } catch (error) {
                 hideLoading(); // 隐藏加载提示
                 console.error('删除网关失败:', error);
-                showMessage('❌ 删除网关失败: ' + error.message, 'error');
+                showBeautifulConfirm('❌ 删除失败', '删除网关时发生错误：\\n' + error.message, 'danger');
             }
         }
 
@@ -4026,7 +4202,7 @@ curl http://localhost:8080/api/health</pre>
             updateCompactMode();
             updateRefreshInterval();
             
-            showMessage('✅ 界面配置已保存', 'success');
+            showBeautifulConfirm('✅ 保存成功', '界面配置已成功保存！', 'info');
         }
         
         function resetUIConfig() {
@@ -4044,7 +4220,7 @@ curl http://localhost:8080/api/health</pre>
             updateCompactMode();
             updateRefreshInterval();
             
-            showMessage('✅ 界面配置已重置为默认值', 'success');
+            showBeautifulConfirm('✅ 重置成功', '界面配置已重置为默认值', 'info');
         }
         
         function changeTheme() {
@@ -4124,7 +4300,7 @@ curl http://localhost:8080/api/health</pre>
         });
 
         // 服务器配置功能
-        async function loadServerConfig() {
+        async function loadServerConfig(showMessage = true) {
             try {
                 const response = await fetch('/api/config/server');
                 const config = await response.json();
@@ -4158,11 +4334,16 @@ curl http://localhost:8080/api/health</pre>
                 document.getElementById('serverLogLevel').value = config.log_level || 'info';
                 document.getElementById('serverLogFile').value = config.log_file || 'dhcp.log';
                 document.getElementById('serverDebug').checked = config.debug || false;
+                document.getElementById('serverAllowAnyServerIP').checked = config.allow_any_server_ip || false;
                 
-                showMessage('✅ 服务器配置加载成功', 'success');
+                if (showMessage) {
+                    showBeautifulConfirm('✅ 加载成功', '服务器配置加载成功', 'info');
+                }
             } catch (error) {
                 console.error('加载服务器配置失败:', error);
-                showMessage('❌ 加载服务器配置失败: ' + error.message, 'error');
+                if (showMessage) {
+                    showBeautifulConfirm('❌ 加载失败', '加载服务器配置失败: ' + error.message, 'danger');
+                }
             }
         }
 
@@ -4198,7 +4379,8 @@ curl http://localhost:8080/api/health</pre>
                     lease_time: leaseTimeSeconds,
                     log_level: document.getElementById('serverLogLevel').value,
                     log_file: document.getElementById('serverLogFile').value,
-                    debug: document.getElementById('serverDebug').checked
+                    debug: document.getElementById('serverDebug').checked,
+                    allow_any_server_ip: document.getElementById('serverAllowAnyServerIP').checked
                 };
                 
                 const response = await fetch('/api/config/server', {
@@ -4210,17 +4392,17 @@ curl http://localhost:8080/api/health</pre>
                 if (response.ok) {
                     const result = await response.json();
                     if (result.restart_required) {
-                        showMessage('✅ ' + result.message, 'warning');
+                        showBeautifulConfirm('⚠️ 配置保存成功', result.message + '\\n\\n需要重启服务器以应用新配置。', 'warning');
                     } else {
-                        showMessage('✅ 服务器配置保存成功', 'success');
+                        showBeautifulConfirm('✅ 保存成功', '服务器配置已成功保存！', 'info');
                     }
                 } else {
                     const error = await response.json();
-                    showMessage('❌ 保存失败: ' + error.error, 'error');
+                    showBeautifulConfirm('❌ 保存失败', '保存服务器配置时发生错误：\\n' + error.error, 'danger');
                 }
             } catch (error) {
                 console.error('保存服务器配置失败:', error);
-                showMessage('❌ 保存失败: ' + error.message, 'error');
+                showBeautifulConfirm('❌ 保存失败', '保存服务器配置时发生错误：\\n' + error.message, 'danger');
             }
         }
 
@@ -4247,7 +4429,7 @@ curl http://localhost:8080/api/health</pre>
             if (container.children.length > 1) {
                 button.parentElement.remove();
             } else {
-                showMessage('⚠️ 至少需要保留一个DNS服务器', 'warning');
+                showBeautifulConfirm('⚠️ 提示', '至少需要保留一个DNS服务器', 'warning');
             }
         }
 
@@ -4272,7 +4454,7 @@ curl http://localhost:8080/api/health</pre>
         }
 
         // 网络配置功能
-        async function loadNetworkConfig() {
+        async function loadNetworkConfig(showMessage = true) {
             console.log('🔄 开始加载网络配置...');
             try {
                 const response = await fetch('/api/config/network');
@@ -4306,10 +4488,14 @@ curl http://localhost:8080/api/health</pre>
                 }
                 
                 console.log('✅ 网络配置加载完成');
-                showMessage('✅ 网络配置加载成功', 'success');
+                if (showMessage) {
+                    showBeautifulConfirm('✅ 加载成功', '网络配置加载成功', 'info');
+                }
             } catch (error) {
                 console.error('❌ 加载网络配置失败:', error);
-                showMessage('❌ 加载网络配置失败: ' + error.message, 'error');
+                if (showMessage) {
+                    showBeautifulConfirm('❌ 加载失败', '加载网络配置失败: ' + error.message, 'danger');
+                }
             }
         }
 
@@ -4337,19 +4523,19 @@ curl http://localhost:8080/api/health</pre>
                 });
                 
                 if (response.ok) {
-                    showMessage('✅ 网络配置保存成功', 'success');
+                    showBeautifulConfirm('✅ 保存成功', '网络配置已成功保存！', 'info');
                 } else {
                     const error = await response.json();
-                    showMessage('❌ 保存失败: ' + error.error, 'error');
+                    showBeautifulConfirm('❌ 保存失败', '保存网络配置时发生错误：\\n' + error.error, 'danger');
                 }
             } catch (error) {
                 console.error('保存网络配置失败:', error);
-                showMessage('❌ 保存失败: ' + error.message, 'error');
+                showBeautifulConfirm('❌ 保存失败', '保存网络配置时发生错误：\\n' + error.message, 'danger');
             }
         }
 
         // 网关检测配置功能
-        async function loadGatewayDetectionConfig() {
+        async function loadGatewayDetectionConfig(showMessage = true) {
             try {
                 const response = await fetch('/api/config/health-check');
                 const config = await response.json();
@@ -4365,10 +4551,14 @@ curl http://localhost:8080/api/health</pre>
                 updateHealthCheckOptions();
                 updateHealthStatus();
                 
-                showMessage('✅ 网关检测配置加载成功', 'success');
+                if (showMessage) {
+                    showBeautifulConfirm('✅ 加载成功', '网关检测配置加载成功', 'info');
+                }
             } catch (error) {
                 console.error('加载网关检测配置失败:', error);
-                showMessage('❌ 加载网关检测配置失败: ' + error.message, 'error');
+                if (showMessage) {
+                    showBeautifulConfirm('❌ 加载失败', '加载网关检测配置失败: ' + error.message, 'danger');
+                }
             }
         }
 
@@ -4401,28 +4591,28 @@ curl http://localhost:8080/api/health</pre>
                 const result = await response.json();
                 
                 if (response.ok) {
-                    showMessage('✅ 网关检测配置保存成功', 'success');
+                    showBeautifulConfirm('✅ 保存成功', '网关检测配置已成功保存！', 'info');
                     updateHealthStatus();
                 } else {
-                    showMessage('❌ 保存失败: ' + result.error, 'error');
+                    showBeautifulConfirm('❌ 保存失败', '保存网关检测配置时发生错误：\\n' + result.error, 'danger');
                 }
             } catch (error) {
                 console.error('保存网关检测配置失败:', error);
-                showMessage('❌ 保存失败: ' + error.message, 'error');
+                showBeautifulConfirm('❌ 保存失败', '保存网关检测配置时发生错误：\\n' + error.message, 'danger');
             }
         }
 
         async function testGatewayDetection() {
             try {
-                showMessage('🔄 正在测试网关检测...', 'info');
+                showBeautifulConfirm('🔄 正在测试', '正在测试网关检测功能，请稍候...', 'info');
                 // 这里应该调用后端API进行测试
                 setTimeout(() => {
-                    showMessage('✅ 网关检测测试完成', 'success');
+                    showBeautifulConfirm('✅ 测试完成', '网关检测功能测试完成！', 'info');
                     updateHealthStatus();
                 }, 2000);
             } catch (error) {
                 console.error('测试网关检测失败:', error);
-                showMessage('❌ 测试失败: ' + error.message, 'error');
+                showBeautifulConfirm('❌ 测试失败', '测试网关检测功能时发生错误：\\n' + error.message, 'danger');
             }
         }
 
@@ -4450,7 +4640,334 @@ curl http://localhost:8080/api/health</pre>
             if (!document.getElementById('loadingOverlay')) {
                 document.body.insertAdjacentHTML('beforeend', loadingHTML);
             }
+            
+            // 定期更新扫描器状态
+            setInterval(updateScannerStatus, 2000);
         });
+
+        // 网络扫描器相关函数
+        async function loadNetworkScannerConfig(showMessage = true) {
+            try {
+                const response = await fetch('/api/scanner/config');
+                const config = await response.json();
+                
+                if (response.ok) {
+                    document.getElementById('scannerEnabled').value = config.enabled ? 'true' : 'false';
+                    document.getElementById('scannerInterval').value = config.scan_interval || 300; // 扫描间隔（秒）
+                    document.getElementById('scannerConcurrency').value = config.max_concurrency || 10;
+                    document.getElementById('scannerTimeout').value = config.ping_timeout || 1000; // Ping超时（毫秒）
+                    
+                    // 显示当前DHCP可分配范围
+                    const networkResponse = await fetch('/api/config/network');
+                    if (networkResponse.ok) {
+                        const networkConfig = await networkResponse.json();
+                        const rangeText = (networkConfig.start_ip || '') + ' - ' + (networkConfig.end_ip || '');
+                        document.getElementById('scannerRangeDisplay').textContent = rangeText;
+                    }
+                    document.getElementById('scannerConflictAction').value = config.auto_conflict ? 'mark_conflicted' : 'ignore';
+                    document.getElementById('scannerConflictTimeout').value = Math.floor(config.conflict_timeout / 60000000000) || 60; // 转换为分钟
+                    
+                    updateScannerStatus();
+                    if (showMessage) {
+                        showBeautifulConfirm('✅ 加载成功', '网络扫描器配置已成功加载！', 'info');
+                    }
+                } else {
+                    if (showMessage) {
+                        showBeautifulConfirm('❌ 加载失败', '加载扫描器配置时发生错误：\\n' + config.error, 'danger');
+                    }
+                }
+            } catch (error) {
+                console.error('加载扫描器配置失败:', error);
+                if (showMessage) {
+                    showBeautifulConfirm('❌ 加载失败', '加载扫描器配置时发生错误：\\n' + error.message, 'danger');
+                }
+            }
+        }
+
+        async function saveNetworkScannerConfig() {
+            try {
+                const config = {
+                    enabled: document.getElementById('scannerEnabled').value === 'true',
+                    scan_interval: parseInt(document.getElementById('scannerInterval').value),
+                    max_concurrency: parseInt(document.getElementById('scannerConcurrency').value),
+                    ping_timeout: parseInt(document.getElementById('scannerTimeout').value),
+                    start_ip: '', // 扫描器会自动使用DHCP可分配范围
+                    end_ip: '',   // 扫描器会自动使用DHCP可分配范围
+                    auto_conflict: document.getElementById('scannerConflictAction').value === 'mark_conflicted',
+                    conflict_timeout: parseInt(document.getElementById('scannerConflictTimeout').value) * 60000000000 // 转换为纳秒
+                };
+                
+                const response = await fetch('/api/scanner/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showBeautifulConfirm('✅ 保存成功', '网络扫描器配置已成功保存！', 'info');
+                    updateScannerStatus();
+                } else {
+                    showBeautifulConfirm('❌ 保存失败', '保存扫描器配置时发生错误：\\n' + result.error, 'danger');
+                }
+            } catch (error) {
+                console.error('保存扫描器配置失败:', error);
+                showBeautifulConfirm('❌ 保存失败', '保存扫描器配置时发生错误：\\n' + error.message, 'danger');
+            }
+        }
+
+        async function startNetworkScanner() {
+            try {
+                showBeautifulConfirm('🔄 正在启动', '正在启动网络扫描器，请稍候...', 'info');
+                const response = await fetch('/api/scanner/start', { method: 'POST' });
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showBeautifulConfirm('✅ 启动成功', '网络扫描器已成功启动！', 'info');
+                    updateScannerStatus();
+                } else {
+                    showBeautifulConfirm('❌ 启动失败', '启动网络扫描器时发生错误：\\n' + result.error, 'danger');
+                }
+            } catch (error) {
+                console.error('启动扫描器失败:', error);
+                showBeautifulConfirm('❌ 启动失败', '启动网络扫描器时发生错误：\\n' + error.message, 'danger');
+            }
+        }
+
+        async function stopNetworkScanner() {
+            try {
+                showBeautifulConfirm('🔄 正在停止', '正在停止网络扫描器，请稍候...', 'info');
+                const response = await fetch('/api/scanner/stop', { method: 'POST' });
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showBeautifulConfirm('✅ 停止成功', '网络扫描器已成功停止！', 'info');
+                    updateScannerStatus();
+                } else {
+                    showBeautifulConfirm('❌ 停止失败', '停止网络扫描器时发生错误：\\n' + result.error, 'danger');
+                }
+            } catch (error) {
+                console.error('停止扫描器失败:', error);
+                showBeautifulConfirm('❌ 停止失败', '停止网络扫描器时发生错误：\\n' + error.message, 'danger');
+            }
+        }
+
+        async function viewScannerResults() {
+            try {
+                const response = await fetch('/api/scanner/results');
+                const result = await response.json();
+                
+                if (response.ok) {
+                    // 创建模态对话框
+                    const modal = document.createElement('div');
+                    modal.className = 'modal';
+                    modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center;';
+                    
+                    const modalContent = document.createElement('div');
+                    modalContent.style.cssText = 'background: white; border-radius: 8px; padding: 20px; max-width: 600px; max-height: 80vh; overflow-y: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.3);';
+                    
+                    let content = '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 2px solid #007bff; padding-bottom: 10px;">';
+                    content += '<h3 style="margin: 0; color: #007bff;">🔍 扫描结果</h3>';
+                    content += '<button onclick="this.parentElement.parentElement.parentElement.remove()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #666;">&times;</button>';
+                    content += '</div>';
+                    
+                    content += '<div style="margin-bottom: 15px;">';
+                    content += '<p style="margin: 0; font-size: 16px; color: #333;"><strong>发现设备数量:</strong> <span style="color: #007bff; font-weight: bold;">' + result.count + '</span></p>';
+                    content += '</div>';
+                    
+                    if (result.devices && result.devices.length > 0) {
+                        content += '<div style="max-height: 400px; overflow-y: auto;">';
+                        content += '<h4 style="margin: 0 0 10px 0; color: #555;">发现的设备:</h4>';
+                        content += '<div style="border: 1px solid #ddd; border-radius: 4px; overflow: hidden;">';
+                        
+                        result.devices.forEach((device, index) => {
+                            const bgColor = index % 2 === 0 ? '#f8f9fa' : '#ffffff';
+                            content += '<div style="padding: 12px; background: ' + bgColor + '; border-bottom: 1px solid #eee;">';
+                            content += '<div style="display: flex; justify-content: space-between; align-items: center;">';
+                            content += '<div>';
+                            content += '<strong style="color: #007bff;">' + device.ip + '</strong>';
+                            content += '<br><small style="color: #666;">MAC: ' + device.mac + '</small>';
+                            content += '</div>';
+                            content += '<div style="text-align: right;">';
+                            content += '<div style="color: #333;">' + (device.hostname || '未知设备') + '</div>';
+                            content += '<small style="color: ' + (device.response === 'ping' ? '#28a745' : '#ffc107') + ';">响应: ' + device.response + '</small>';
+                            content += '</div>';
+                            content += '</div>';
+                            content += '</div>';
+                        });
+                        
+                        content += '</div>';
+                        content += '</div>';
+                    } else {
+                        content += '<div style="text-align: center; padding: 40px; color: #666;">';
+                        content += '<p style="margin: 0;">暂无扫描结果</p>';
+                        content += '</div>';
+                    }
+                    
+                    content += '<div style="margin-top: 20px; text-align: center;">';
+                    content += '<button onclick="this.parentElement.parentElement.parentElement.remove()" style="background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer;">关闭</button>';
+                    content += '</div>';
+                    
+                    modalContent.innerHTML = content;
+                    modal.appendChild(modalContent);
+                    document.body.appendChild(modal);
+                    
+                    // 点击背景关闭
+                    modal.addEventListener('click', function(e) {
+                        if (e.target === modal) {
+                            modal.remove();
+                        }
+                    });
+                } else {
+                    showBeautifulConfirm('❌ 获取失败', '获取扫描结果失败: ' + result.error, 'danger');
+                }
+            } catch (error) {
+                console.error('获取扫描结果失败:', error);
+                showBeautifulConfirm('❌ 获取失败', '获取扫描结果失败: ' + error.message, 'danger');
+            }
+        }
+
+        async function viewScannerLog() {
+            try {
+                const response = await fetch('/api/scanner/log');
+                const result = await response.json();
+                
+                if (response.ok) {
+                    // 创建模态对话框
+                    const modal = document.createElement('div');
+                    modal.className = 'modal';
+                    modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center;';
+                    
+                    const modalContent = document.createElement('div');
+                    modalContent.style.cssText = 'background: white; border-radius: 8px; padding: 20px; max-width: 700px; max-height: 80vh; overflow-y: auto; box-shadow: 0 4px 20px rgba(0,0,0,0.3);';
+                    
+                    let content = '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 2px solid #007bff; padding-bottom: 10px;">';
+                    content += '<h3 style="margin: 0; color: #007bff;">📋 扫描日志</h3>';
+                    content += '<button onclick="this.parentElement.parentElement.parentElement.remove()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #666;">&times;</button>';
+                    content += '</div>';
+                    
+                    content += '<div style="margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;">';
+                    content += '<p style="margin: 0; font-size: 16px; color: #333;"><strong>日志数量:</strong> <span style="color: #007bff; font-weight: bold;">' + result.count + '</span></p>';
+                    content += '<button onclick="exportScannerLog()" style="background: #28a745; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 14px;">📥 导出日志</button>';
+                    content += '</div>';
+                    
+                    if (result.logs && result.logs.length > 0) {
+                        content += '<div style="max-height: 400px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; background: #f8f9fa;">';
+                        content += '<div style="padding: 15px;">';
+                        
+                        result.logs.forEach((log, index) => {
+                            const bgColor = index % 2 === 0 ? '#ffffff' : '#f8f9fa';
+                            content += '<div style="padding: 8px 12px; background: ' + bgColor + '; border-radius: 4px; margin-bottom: 4px; font-family: monospace; font-size: 13px;">';
+                            content += '<span style="color: #007bff; font-weight: bold; margin-right: 8px;">' + (index + 1) + '.</span>';
+                            content += '<span style="color: #333;">' + log + '</span>';
+                            content += '</div>';
+                        });
+                        
+                        content += '</div>';
+                        content += '</div>';
+                    } else {
+                        content += '<div style="text-align: center; padding: 40px; color: #666;">';
+                        content += '<p style="margin: 0;">暂无扫描日志</p>';
+                        content += '</div>';
+                    }
+                    
+                    content += '<div style="margin-top: 15px; padding: 10px; background: #e7f3ff; border-radius: 4px; border-left: 4px solid #007bff;">';
+                    content += '<small style="color: #007bff;">💡 提示：日志按时间倒序显示，最新的记录在顶部</small>';
+                    content += '</div>';
+                    
+                    content += '<div style="margin-top: 20px; text-align: center;">';
+                    content += '<button onclick="this.parentElement.parentElement.parentElement.remove()" style="background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer;">关闭</button>';
+                    content += '</div>';
+                    
+                    modalContent.innerHTML = content;
+                    modal.appendChild(modalContent);
+                    document.body.appendChild(modal);
+                    
+                    // 点击背景关闭
+                    modal.addEventListener('click', function(e) {
+                        if (e.target === modal) {
+                            modal.remove();
+                        }
+                    });
+                } else {
+                    showBeautifulConfirm('❌ 获取失败', '获取扫描日志失败: ' + result.error, 'danger');
+                }
+            } catch (error) {
+                console.error('获取扫描日志失败:', error);
+                showBeautifulConfirm('❌ 获取失败', '获取扫描日志失败: ' + error.message, 'danger');
+            }
+        }
+
+        async function refreshScannerLog() {
+            try {
+                const response = await fetch('/api/scanner/log');
+                const result = await response.json();
+                
+                if (response.ok) {
+                    const logContainer = document.querySelector('.log-container');
+                    const logCount = document.querySelector('.log-count');
+                    
+                    if (logContainer && logCount) {
+logContainer.innerHTML = '';
+if (result.logs && result.logs.length > 0) {
+    for (var i = 0; i < result.logs.length; i++) {
+        logContainer.innerHTML += '<div class="log-entry">' + result.logs[i] + '</div>';
+    }
+} else {
+    logContainer.innerHTML = '<div class="no-logs">暂无扫描日志</div>';
+}
+                            '<div class="no-logs">暂无扫描日志</div>';
+                        
+                        // 滚动到底部
+                        logContainer.scrollTop = logContainer.scrollHeight;
+                    }
+                }
+            } catch (error) {
+                console.error('刷新扫描日志失败:', error);
+            }
+        }
+
+        function exportScannerLog() {
+            const logEntries = document.querySelectorAll('.log-entry');
+            let logText = '扫描日志导出\\n';
+            logText += '导出时间: ' + new Date().toLocaleString() + '\\n\\n';
+            
+            logEntries.forEach(entry => {
+                logText += entry.textContent + '\\n';
+            });
+            
+            // 创建下载链接
+            const blob = new Blob([logText], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'scanner_log_' + new Date().toISOString().slice(0, 19).replace(/:/g, '-') + '.txt';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        async function updateScannerStatus() {
+            try {
+                const response = await fetch('/api/scanner');
+                const result = await response.json();
+                
+                if (response.ok) {
+                    document.getElementById('scannerServiceStatus').textContent = result.is_running ? '运行中' : '已停止';
+                    document.getElementById('scanProgress').textContent = result.scan_progress + '%';
+                    document.getElementById('currentScanIP').textContent = result.current_scan || '--';
+                    document.getElementById('scannedIPs').textContent = result.scanned_ips + '/' + result.total_ips;
+                    document.getElementById('discoveredDevicesCount').textContent = result.found_devices || 0;
+                    document.getElementById('conflictedIPsCount').textContent = result.conflicted_ips || 0;
+                    document.getElementById('lastScanTime').textContent = result.last_scan ? new Date(result.last_scan).toLocaleString() : '--';
+                    document.getElementById('nextScanTime').textContent = result.next_scan ? new Date(result.next_scan).toLocaleString() : '--';
+                }
+            } catch (error) {
+                console.error('更新扫描器状态失败:', error);
+            }
+        }
 
     </script>
 </body>
@@ -6452,4 +6969,215 @@ func readLastNLines(filename string, n int) ([]string, error) {
 	}
 
 	return lines, nil
+}
+
+// handleScanner 处理扫描器状态请求
+func (api *APIServer) handleScanner(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if api.scanner == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "扫描器未启用"})
+		return
+	}
+
+	switch r.Method {
+	case "GET":
+		status := api.scanner.GetStatus()
+		response := map[string]interface{}{
+			"enabled":        status.IsEnabled,
+			"is_running":     status.IsRunning,
+			"last_scan":      status.LastScanTime,
+			"next_scan":      status.NextScanTime,
+			"scan_progress":  status.ScanProgress,
+			"scanned_ips":    status.ScannedIPs,
+			"total_ips":      status.TotalIPs,
+			"found_devices":  status.FoundDevices,
+			"conflicted_ips": status.ConflictedIPs,
+			"current_scan":   status.CurrentScan,
+			"config":         api.config.Scanner,
+		}
+		json.NewEncoder(w).Encode(response)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+	}
+}
+
+// handleScannerResults 处理扫描结果请求
+func (api *APIServer) handleScannerResults(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if api.scanner == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "扫描器未启用"})
+		return
+	}
+
+	if r.Method != "GET" {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	results := api.scanner.GetScanResults()
+	var devices []map[string]interface{}
+
+	for _, device := range results {
+		deviceInfo := map[string]interface{}{
+			"mac":       device.MAC,
+			"ip":        device.IP,
+			"hostname":  device.Hostname,
+			"last_seen": device.LastSeen,
+			"is_active": device.IsActive,
+			"vendor":    device.Vendor,
+			"response":  device.Response,
+		}
+		devices = append(devices, deviceInfo)
+	}
+
+	response := map[string]interface{}{
+		"devices": devices,
+		"count":   len(devices),
+	}
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleScannerLog 处理扫描日志请求
+func (api *APIServer) handleScannerLog(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if api.scanner == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "扫描器未启用"})
+		return
+	}
+
+	if r.Method != "GET" {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	logs := api.scanner.GetScanLog()
+	response := map[string]interface{}{
+		"logs":  logs,
+		"count": len(logs),
+	}
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleScannerStart 处理启动扫描器请求
+func (api *APIServer) handleScannerStart(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if api.scanner == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "扫描器未启用"})
+		return
+	}
+
+	if r.Method != "POST" {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	api.scanner.Start()
+	response := map[string]interface{}{
+		"success": true,
+		"message": "扫描器已启动",
+	}
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleScannerStop 处理停止扫描器请求
+func (api *APIServer) handleScannerStop(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if api.scanner == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{"error": "扫描器未启用"})
+		return
+	}
+
+	if r.Method != "POST" {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	api.scanner.Stop()
+	response := map[string]interface{}{
+		"success": true,
+		"message": "扫描器已停止",
+	}
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleScannerConfig 处理扫描器配置请求
+func (api *APIServer) handleScannerConfig(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	switch r.Method {
+	case "GET":
+		json.NewEncoder(w).Encode(api.config.Scanner)
+	case "POST":
+		var newScannerConfig config.ScannerConfig
+		if err := json.NewDecoder(r.Body).Decode(&newScannerConfig); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Invalid JSON"})
+			return
+		}
+
+		// 基本验证
+		if newScannerConfig.ScanInterval <= 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "扫描间隔必须大于0"})
+			return
+		}
+
+		if newScannerConfig.MaxConcurrency <= 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "最大并发数必须大于0"})
+			return
+		}
+
+		// 更新配置
+		api.config.Scanner = newScannerConfig
+
+		// 保存配置到文件
+		if err := api.config.SaveConfig(api.configPath); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "保存配置失败: " + err.Error()})
+			return
+		}
+
+		// 如果扫描器存在，重新应用配置
+		if api.scanner != nil {
+			// 停止当前扫描器
+			wasRunning := api.scanner.IsRunning()
+			if wasRunning {
+				api.scanner.Stop()
+			}
+
+			// 重新创建扫描器实例以应用新配置
+			api.scanner = dhcp.NewNetworkScanner(api.config, api.pool)
+
+			// 如果之前在运行，重新启动
+			if wasRunning {
+				api.scanner.Start()
+			}
+		}
+
+		response := map[string]interface{}{
+			"success": true,
+			"message": "扫描器配置更新成功",
+			"config":  api.config.Scanner,
+		}
+		json.NewEncoder(w).Encode(response)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+	}
 }

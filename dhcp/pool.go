@@ -45,13 +45,14 @@ func (lease *IPLease) RemainingTime() time.Duration {
 
 // IPPool IP地址池
 type IPPool struct {
-	config    *config.Config
-	startIP   net.IP
-	endIP     net.IP
-	leases    map[string]*IPLease // key: IP地址字符串
-	macToIP   map[string]string   // MAC地址到IP的映射
-	mutex     sync.RWMutex
-	leaseTime time.Duration
+	config      *config.Config
+	startIP     net.IP
+	endIP       net.IP
+	leases      map[string]*IPLease  // key: IP地址字符串
+	macToIP     map[string]string    // MAC地址到IP的映射
+	conflictIPs map[string]time.Time // 冲突IP列表，记录冲突时间和原因
+	mutex       sync.RWMutex
+	leaseTime   time.Duration
 }
 
 // NewIPPool 创建IP地址池
@@ -67,12 +68,13 @@ func NewIPPool(cfg *config.Config) (*IPPool, error) {
 	}
 
 	pool := &IPPool{
-		config:    cfg,
-		startIP:   startIP.To4(),
-		endIP:     endIP.To4(),
-		leases:    make(map[string]*IPLease),
-		macToIP:   make(map[string]string),
-		leaseTime: cfg.Server.LeaseTime,
+		config:      cfg,
+		startIP:     startIP.To4(),
+		endIP:       endIP.To4(),
+		leases:      make(map[string]*IPLease),
+		macToIP:     make(map[string]string),
+		conflictIPs: make(map[string]time.Time),
+		leaseTime:   cfg.Server.LeaseTime,
 	}
 
 	// 初始化静态绑定
@@ -131,6 +133,9 @@ func (pool *IPPool) RequestIP(clientMAC string, requestedIP net.IP, hostname str
 	}
 	macStr := mac.String()
 
+	log.Printf("RequestIP: MAC=%s, RequestedIP=%s, Hostname=%s", macStr, requestedIP, hostname)
+	log.Printf("地址池范围: %s - %s", pool.startIP, pool.endIP)
+
 	// 检查是否有静态绑定
 	if existingIP, exists := pool.macToIP[macStr]; exists {
 		if lease, ok := pool.leases[existingIP]; ok && lease.IsStatic {
@@ -142,11 +147,19 @@ func (pool *IPPool) RequestIP(clientMAC string, requestedIP net.IP, hostname str
 	// 检查是否已有动态租约
 	if existingIP, exists := pool.macToIP[macStr]; exists {
 		if lease, ok := pool.leases[existingIP]; ok && !lease.IsExpired() {
-			// 续租现有IP
-			lease.StartTime = time.Now()
-			lease.Hostname = hostname
-			log.Printf("续租IP: %s -> %s", macStr, existingIP)
-			return lease, nil
+			// 检查现有IP是否在冲突列表中（直接访问，因为已经持有锁）
+			if _, conflictExists := pool.conflictIPs[existingIP]; conflictExists {
+				log.Printf("现有IP %s 在冲突列表中，释放租约并分配新IP", existingIP)
+				// 释放冲突的IP租约
+				delete(pool.leases, existingIP)
+				delete(pool.macToIP, macStr)
+			} else {
+				// 续租现有IP
+				lease.StartTime = time.Now()
+				lease.Hostname = hostname
+				log.Printf("续租IP: %s -> %s", macStr, existingIP)
+				return lease, nil
+			}
 		} else {
 			// 清理过期租约
 			delete(pool.leases, existingIP)
@@ -156,17 +169,27 @@ func (pool *IPPool) RequestIP(clientMAC string, requestedIP net.IP, hostname str
 
 	// 如果客户端请求特定IP，检查是否可用
 	if requestedIP != nil && !requestedIP.IsUnspecified() {
+		log.Printf("检查请求的IP: %s", requestedIP)
+		log.Printf("IP在范围内: %v", pool.isIPInRange(requestedIP))
+		log.Printf("IP可用: %v", pool.isIPAvailable(requestedIP.String()))
+
 		if pool.isIPInRange(requestedIP) && pool.isIPAvailable(requestedIP.String()) {
+			log.Printf("分配请求的IP: %s", requestedIP)
 			return pool.allocateIP(requestedIP, macStr, hostname), nil
+		} else {
+			log.Printf("请求的IP不可用: %s", requestedIP)
 		}
 	}
 
 	// 分配新的IP地址
+	log.Printf("查找可用IP地址...")
 	newIP := pool.findAvailableIP()
 	if newIP == nil {
+		log.Printf("错误: 地址池已满，无法分配新IP")
 		return nil, fmt.Errorf("地址池已满，无法分配新IP")
 	}
 
+	log.Printf("找到可用IP: %s", newIP)
 	return pool.allocateIP(newIP, macStr, hostname), nil
 }
 
@@ -195,20 +218,42 @@ func (pool *IPPool) findAvailableIP() net.IP {
 	start := binary.BigEndian.Uint32(pool.startIP)
 	end := binary.BigEndian.Uint32(pool.endIP)
 
+	log.Printf("开始查找可用IP，范围: %s - %s", pool.startIP, pool.endIP)
+	log.Printf("当前租约数量: %d", len(pool.leases))
+	log.Printf("当前冲突IP数量: %d", len(pool.conflictIPs))
+	log.Printf("start值: %d, end值: %d", start, end)
+
+	if start > end {
+		log.Printf("错误: start(%d) > end(%d)，地址范围无效", start, end)
+		return nil
+	}
+
+	log.Printf("开始遍历IP地址...")
 	for i := start; i <= end; i++ {
 		ip := make(net.IP, 4)
 		binary.BigEndian.PutUint32(ip, i)
+		ipStr := ip.String()
 
-		if pool.isIPAvailable(ip.String()) {
+		log.Printf("检查IP: %s (数值: %d)", ipStr, i)
+		if pool.isIPAvailable(ipStr) {
+			log.Printf("找到可用IP: %s", ipStr)
 			return ip
+		} else {
+			log.Printf("IP %s 不可用", ipStr)
 		}
 	}
 
+	log.Printf("错误: 地址池中没有任何可用IP")
 	return nil
 }
 
 // isIPAvailable 检查IP是否可用
 func (pool *IPPool) isIPAvailable(ip string) bool {
+	// 检查是否在冲突列表中（直接访问，因为调用者已经持有锁）
+	if _, exists := pool.conflictIPs[ip]; exists {
+		return false
+	}
+
 	lease, exists := pool.leases[ip]
 	if !exists {
 		return true
@@ -312,6 +357,30 @@ func (pool *IPPool) CleanupExpiredLeases() {
 	if len(expiredIPs) > 0 {
 		log.Printf("清理了 %d 个过期租约", len(expiredIPs))
 	}
+
+	// 同时清理过期的冲突IP
+	pool.cleanupConflictIPs()
+}
+
+// cleanupConflictIPs 清理过期的冲突IP（内部方法，不获取锁）
+func (pool *IPPool) cleanupConflictIPs() {
+	cutoffTime := time.Now().Add(-time.Hour) // 1小时前
+	var toRemove []string
+
+	for ip, conflictTime := range pool.conflictIPs {
+		if conflictTime.Before(cutoffTime) {
+			toRemove = append(toRemove, ip)
+		}
+	}
+
+	for _, ip := range toRemove {
+		delete(pool.conflictIPs, ip)
+		log.Printf("清理过期冲突IP: %s", ip)
+	}
+
+	if len(toRemove) > 0 {
+		log.Printf("清理了 %d 个过期冲突IP", len(toRemove))
+	}
 }
 
 // GetPoolStats 获取地址池统计信息
@@ -389,4 +458,34 @@ func (pool *IPPool) GetActiveLeases() []*IPLease {
 	}
 
 	return activeLeases
+}
+
+// MarkIPAsConflict 将IP标记为冲突状态
+func (pool *IPPool) MarkIPAsConflict(ip string) {
+	pool.mutex.Lock()
+	defer pool.mutex.Unlock()
+
+	pool.conflictIPs[ip] = time.Now()
+	log.Printf("IP地址 %s 被标记为冲突状态", ip)
+}
+
+// IsIPInConflict 检查IP是否在冲突列表中
+func (pool *IPPool) IsIPInConflict(ip string) bool {
+	pool.mutex.RLock()
+	defer pool.mutex.RUnlock()
+
+	_, exists := pool.conflictIPs[ip]
+	return exists
+}
+
+// GetConflictIPs 获取所有冲突IP
+func (pool *IPPool) GetConflictIPs() map[string]time.Time {
+	pool.mutex.RLock()
+	defer pool.mutex.RUnlock()
+
+	result := make(map[string]time.Time)
+	for ip, time := range pool.conflictIPs {
+		result[ip] = time
+	}
+	return result
 }

@@ -20,18 +20,20 @@ type Config struct {
 	Bindings    []MACBinding  `yaml:"bindings"`
 	Devices     []DeviceInfo  `yaml:"devices"` // 设备信息配置
 	HealthCheck HealthConfig  `yaml:"health_check"`
+	Scanner     ScannerConfig `yaml:"scanner"` // 网络扫描器配置
 }
 
 // ServerConfig DHCP服务器配置
 type ServerConfig struct {
-	Interface string        `yaml:"interface" json:"interface"`
-	Port      int           `yaml:"port" json:"port"`
-	LeaseTime time.Duration `yaml:"lease_time" json:"lease_time"`
-	APIPort   int           `yaml:"api_port" json:"api_port"`
-	APIHost   string        `yaml:"api_host" json:"api_host"` // API监听地址
-	LogLevel  string        `yaml:"log_level" json:"log_level"`
-	LogFile   string        `yaml:"log_file" json:"log_file"`
-	Debug     bool          `yaml:"debug" json:"debug"`
+	Interface        string        `yaml:"interface" json:"interface"`
+	Port             int           `yaml:"port" json:"port"`
+	LeaseTime        time.Duration `yaml:"lease_time" json:"lease_time"`
+	APIPort          int           `yaml:"api_port" json:"api_port"`
+	APIHost          string        `yaml:"api_host" json:"api_host"` // API监听地址
+	LogLevel         string        `yaml:"log_level" json:"log_level"`
+	LogFile          string        `yaml:"log_file" json:"log_file"`
+	Debug            bool          `yaml:"debug" json:"debug"`
+	AllowAnyServerIP bool          `yaml:"allow_any_server_ip" json:"allow_any_server_ip"` // 允许响应任意ServerIP
 }
 
 // NetworkConfig 网络配置
@@ -71,12 +73,26 @@ type MACBinding struct {
 
 // HealthConfig 健康检查配置
 type HealthConfig struct {
-	Interval   time.Duration `yaml:"interval"`
-	Timeout    time.Duration `yaml:"timeout"`
-	RetryCount int           `yaml:"retry_count"`
-	Method     string        `yaml:"method"` // ping, tcp, http
-	TCPPort    int           `yaml:"tcp_port"`
-	HTTPPath   string        `yaml:"http_path"`
+	Interval   time.Duration `yaml:"interval" json:"interval"`
+	Timeout    time.Duration `yaml:"timeout" json:"timeout"`
+	RetryCount int           `yaml:"retry_count" json:"retry_count"`
+	Method     string        `yaml:"method" json:"method"` // ping, tcp, http
+	TCPPort    int           `yaml:"tcp_port" json:"tcp_port"`
+	HTTPPath   string        `yaml:"http_path" json:"http_path"`
+}
+
+// ScannerConfig 网络扫描器配置
+type ScannerConfig struct {
+	Enabled         bool          `yaml:"enabled" json:"enabled"`                   // 是否启用扫描器
+	ScanInterval    int           `yaml:"scan_interval" json:"scan_interval"`       // 扫描间隔（秒）
+	MaxConcurrency  int           `yaml:"max_concurrency" json:"max_concurrency"`   // 最大并发数
+	PingTimeout     int           `yaml:"ping_timeout" json:"ping_timeout"`         // Ping超时时间（毫秒）
+	InactiveTimeout int           `yaml:"inactive_timeout" json:"inactive_timeout"` // 非活跃超时时间（小时）
+	StartIP         string        `yaml:"start_ip" json:"start_ip"`                 // 扫描起始IP
+	EndIP           string        `yaml:"end_ip" json:"end_ip"`                     // 扫描结束IP
+	AutoConflict    bool          `yaml:"auto_conflict" json:"auto_conflict"`       // 自动检测IP冲突
+	ConflictTimeout time.Duration `yaml:"conflict_timeout" json:"conflict_timeout"` // 冲突IP超时时间
+	LogLevel        string        `yaml:"log_level" json:"log_level"`               // 日志级别
 }
 
 // DeviceInfo 设备信息

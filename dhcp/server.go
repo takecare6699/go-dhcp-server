@@ -1,6 +1,7 @@
 package dhcp
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -196,12 +197,16 @@ func (s *Server) handleDHCPPacket(conn net.PacketConn, peer net.Addr, m *dhcpv4.
 
 // handleDiscover 处理DHCP Discover消息
 func (s *Server) handleDiscover(req *dhcpv4.DHCPv4) (*dhcpv4.DHCPv4, error) {
+	log.Printf("=== 开始处理DHCP Discover ===")
+
 	clientMAC := req.ClientHWAddr.String()
 	hostname := req.HostName()
 	requestedIP := req.RequestedIPAddress()
 
 	log.Printf("DHCP Discover: MAC=%s, Hostname=%s, RequestedIP=%s",
 		clientMAC, hostname, requestedIP)
+
+	log.Printf("准备调用 s.pool.RequestIP...")
 
 	// 尝试分配IP地址
 	lease, err := s.pool.RequestIP(clientMAC, requestedIP, hostname)
@@ -210,19 +215,31 @@ func (s *Server) handleDiscover(req *dhcpv4.DHCPv4) (*dhcpv4.DHCPv4, error) {
 		return nil, err
 	}
 
+	log.Printf("IP分配成功: %s", lease.IP)
+
 	// 记录历史和更新租约网关信息
 	gateway := s.selectGateway(lease)
 	gatewayName := ""
 	if gateway != nil {
 		gatewayName = gateway.Name
 		lease.GatewayIP = gateway.IP // 记录实际响应的网关IP
+		log.Printf("为客户端分配网关: %s (%s)", gatewayName, gateway.IP)
+	} else {
+		log.Printf("警告: 没有找到可用的网关")
 	}
 	s.addHistory(lease.IP.String(), clientMAC, hostname, "DISCOVER", gatewayName)
 
+	log.Printf("准备创建DHCP Offer响应...")
+
 	// 创建DHCP Offer响应
 	offer := s.createResponse(req, dhcpv4.MessageTypeOffer, lease)
+	if offer == nil {
+		log.Printf("创建DHCP Offer响应失败")
+		return nil, fmt.Errorf("创建DHCP Offer响应失败")
+	}
 
 	log.Printf("发送DHCP Offer: MAC=%s, IP=%s", clientMAC, lease.IP)
+	log.Printf("=== DHCP Discover处理完成 ===")
 	return offer, nil
 }
 
@@ -236,8 +253,8 @@ func (s *Server) handleRequest(req *dhcpv4.DHCPv4) (*dhcpv4.DHCPv4, error) {
 		clientMAC, requestedIP, serverIP)
 
 	// 检查是否是对我们的响应
-	if serverIP != nil && !s.isOurServerIP(serverIP) {
-		log.Printf("DHCP Request不是发给我们的服务器 (ServerIP: %s)", serverIP)
+	if serverIP != nil && !s.isOurServerIP(serverIP) && !s.config.Server.AllowAnyServerIP {
+		log.Printf("DHCP Request不是发给我们的服务器 (ServerIP: %s)，已拒绝。若需允许响应任意ServerIP，请在配置中开启该选项。", serverIP)
 		return nil, nil
 	}
 
@@ -251,22 +268,29 @@ func (s *Server) handleRequest(req *dhcpv4.DHCPv4) (*dhcpv4.DHCPv4, error) {
 		return s.createNAK(req, "无效的IP地址"), nil
 	}
 
-	// 检查租约是否存在且有效
-	lease, exists := s.pool.GetLease(requestedIP.String())
-	if !exists || lease.MAC != clientMAC {
-		// 如果请求的IP不存在，尝试根据MAC地址查找租约
-		if leaseByMAC, existsByMAC := s.pool.GetLeaseByMAC(clientMAC); existsByMAC {
-			log.Printf("DHCP Request: 设备请求IP %s，但分配的IP是 %s，使用分配的IP", requestedIP, leaseByMAC.IP)
-			lease = leaseByMAC
+	// 优先查找MAC的租约
+	lease, existsByMAC := s.pool.GetLeaseByMAC(clientMAC)
+	if existsByMAC {
+		if lease.IP.Equal(requestedIP) {
+			log.Printf("DHCP Request: MAC和IP都匹配，续租")
+			if !lease.IsStatic {
+				lease.StartTime = time.Now()
+			}
 		} else {
-			log.Printf("DHCP Request: 租约不存在或MAC地址不匹配")
-			return s.createNAK(req, "租约不存在"), nil
+			log.Printf("DHCP Request: 设备请求IP %s，但分配的IP是 %s，使用分配的IP", requestedIP, lease.IP)
+			if !lease.IsStatic {
+				lease.StartTime = time.Now()
+			}
 		}
-	}
-
-	// 更新租约时间
-	if !lease.IsStatic {
-		lease.StartTime = time.Now()
+	} else {
+		// 没有MAC租约，尝试分配新IP
+		var err error
+		lease, err = s.pool.RequestIP(clientMAC, nil, req.HostName())
+		if err != nil {
+			log.Printf("DHCP Request: 无法分配新IP: %v", err)
+			return s.createNAK(req, "无法分配新IP"), nil
+		}
+		log.Printf("DHCP Request: 为MAC=%s分配新IP: %s", clientMAC, lease.IP)
 	}
 
 	// 记录历史和更新租约网关信息
@@ -317,6 +341,18 @@ func (s *Server) handleDecline(req *dhcpv4.DHCPv4) error {
 	// 将IP地址标记为有问题，暂时从池中移除
 	// 这里可以实现更复杂的逻辑，比如记录问题IP等
 	log.Printf("客户端拒绝IP地址: %s", requestedIP)
+
+	// 改进：将拒绝的IP地址标记为冲突状态
+	if requestedIP != nil && !requestedIP.IsUnspecified() {
+		// 释放该IP的租约
+		if err := s.pool.ReleaseIP(clientMAC); err != nil {
+			log.Printf("释放被拒绝IP的租约失败: %v", err)
+		}
+
+		// 将IP标记为冲突状态
+		s.pool.MarkIPAsConflict(requestedIP.String())
+		log.Printf("IP地址 %s 被标记为冲突状态，将暂时避免分配给其他客户端", requestedIP)
+	}
 
 	return nil
 }
@@ -406,6 +442,16 @@ func (s *Server) addNetworkOptions(resp *dhcpv4.DHCPv4, lease *IPLease) {
 		if gatewayIP != nil {
 			resp.UpdateOption(dhcpv4.OptRouter(gatewayIP.To4()))
 			log.Printf("为客户端分配网关: %s (%s)", gateway.Name, gateway.IP)
+		}
+	} else {
+		// 即使网关不健康，也要添加默认网关
+		if len(s.config.Gateways) > 0 {
+			defaultGateway := s.config.Gateways[0]
+			gatewayIP := net.ParseIP(defaultGateway.IP)
+			if gatewayIP != nil {
+				resp.UpdateOption(dhcpv4.OptRouter(gatewayIP.To4()))
+				log.Printf("为客户端分配默认网关: %s (%s)", defaultGateway.Name, defaultGateway.IP)
+			}
 		}
 	}
 

@@ -23,12 +23,13 @@ var (
 	help       = flag.Bool("help", false, "显示帮助信息")
 
 	// 全局变量，用于热重载
-	globalConfig *config.Config
-	globalServer *dhcp.Server
-	globalAPI    *api.APIServer
-	serverMutex  sync.RWMutex
-	isRestarting bool
-	restartMutex sync.Mutex
+	globalConfig  *config.Config
+	globalServer  *dhcp.Server
+	globalAPI     *api.APIServer
+	globalScanner *dhcp.NetworkScanner
+	serverMutex   sync.RWMutex
+	isRestarting  bool
+	restartMutex  sync.Mutex
 )
 
 const (
@@ -75,6 +76,11 @@ func main() {
 		log.Fatalf("DHCP服务器初始化失败: %v", err)
 	}
 
+	// 初始化网络扫描器
+	if err := initializeNetworkScanner(cfg); err != nil {
+		log.Fatalf("网络扫描器初始化失败: %v", err)
+	}
+
 	// 创建HTTP API服务器
 	globalAPI = api.NewAPIServer(
 		globalServer.GetPool(),
@@ -82,6 +88,7 @@ func main() {
 		globalConfig,
 		*configPath,
 		globalServer,
+		globalScanner,
 		globalConfig.Server.APIPort,
 	)
 
@@ -118,6 +125,11 @@ func main() {
 		log.Printf("HTTP API服务器停止错误: %v", err)
 	}
 
+	// 停止网络扫描器
+	if globalScanner != nil {
+		globalScanner.Stop()
+	}
+
 	// 停止DHCP服务器
 	globalServer.Stop()
 
@@ -139,6 +151,24 @@ func initializeDHCPServer(cfg *config.Config) error {
 	// 打印配置摘要
 	printConfigSummary(cfg)
 
+	return nil
+}
+
+// initializeNetworkScanner 初始化网络扫描器
+func initializeNetworkScanner(cfg *config.Config) error {
+	if !cfg.Scanner.Enabled {
+		log.Println("网络扫描器已禁用")
+		return nil
+	}
+
+	// 创建网络扫描器
+	scanner := dhcp.NewNetworkScanner(cfg, globalServer.GetPool())
+	globalScanner = scanner
+
+	// 启动扫描器
+	scanner.Start()
+
+	log.Printf("网络扫描器已启动，扫描间隔: %d秒", cfg.Scanner.ScanInterval)
 	return nil
 }
 
@@ -186,7 +216,7 @@ func reloadConfig(newConfig *config.Config) error {
 
 	// 更新API服务器的引用
 	if globalAPI != nil {
-		globalAPI.UpdateReferences(newServer.GetPool(), newServer.GetChecker(), newConfig, newServer)
+		globalAPI.UpdateReferences(newServer.GetPool(), newServer.GetChecker(), newConfig, newServer, globalScanner)
 	}
 
 	log.Println("配置重新加载成功")

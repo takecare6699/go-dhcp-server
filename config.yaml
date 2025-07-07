@@ -7,88 +7,66 @@ server:
   log_level: info
   log_file: dhcp.log
   debug: false
+  allow_any_server_ip: false
 network:
-  subnet: 192.168.1.0/24
+  subnet: 192.168.2.0/24
   netmask: ""
-  start_ip: 192.168.1.100
-  end_ip: 192.168.1.200
+  start_ip: 192.168.2.150
+  end_ip: 192.168.2.200
   dns_servers:
   - 8.8.8.8
   - 8.8.4.4
   domain_name: local
-  default_gateway: 192.168.1.1
+  default_gateway: 192.168.2.1
   dns1: ""
   dns2: ""
   lease_time: 86400
   renewal_time: 43200
   rebinding_time: 75600
-  broadcast_address: 192.168.1.255
+  broadcast_address: 192.168.2.255
 gateways:
 - name: main_gateway
-  ip: 192.168.5.22
+  ip: 192.168.2.1
   is_default: true
   description: 主网关
   dns_servers:
-  - 1.1.1.1
-  - 1.0.0.1
+  - 192.168.2.1
 - name: backup_gateway
-  ip: 192.168.68.253
+  ip: 192.168.2.253
   is_default: false
   description: 备用
   dns_servers:
   - 8.8.8.8
   - 8.8.4.4
-- name: backup2
-  ip: 192.168.8.8
-  is_default: false
-  description: test
-  dns_servers: []
-bindings:
-- alias: ubuntu-linux-22-04-02-desktop
-  mac: 00:1c:42:c1:61:ef
-  ip: 192.168.1.102
-  gateway: ""
-  hostname: ubuntu-linux-22-04-02-desktop
-- alias: ubuntu-linux-22-04-02-desktop-1
-  mac: fe:fd:f1:83:0b:dd
-  ip: 192.168.1.101
-  gateway: ""
-  hostname: ubuntu-linux-22-04-02-desktop
+bindings: []
 devices:
-- mac: invalid-mac-address
-  device_type: TestDevice
-  model: ""
-  description: ""
-  owner: ""
-  hostname: ""
-- mac: aa:bb:cc:dd:ee:99
-  device_type: Server
-  model: TestServer
-  description: 通过设备发现自动添加
-  owner: ""
-  hostname: converted-test-host
-- mac: 00:1c:42:b3:55:fb
-  device_type: Unknown
-  model: ""
-  description: 租约转静态时自动创建
-  owner: ""
-  hostname: auto-created-host
-- mac: 00:1c:42:c1:61:ef
-  device_type: Unknown
-  model: ""
-  description: 租约转静态时自动创建
-  owner: ""
-  hostname: ubuntu-linux-22-04-02-desktop
 - mac: fe:fd:f1:83:0b:dd
   device_type: Unknown
   model: ""
   description: 租约转静态时自动创建
   owner: ""
   hostname: ubuntu-linux-22-04-02-desktop
+- mac: de:5b:b5:00:68:63
+  device_type: Unknown
+  model: ""
+  description: 租约转静态时自动创建
+  owner: ""
+  hostname: iPhone
 health_check:
-  interval: 30s
+  interval: 35s
   timeout: 5s
   retry_count: 3
   method: ping
-  tcp_port: 0
-  http_path: ""
+  tcp_port: 80
+  http_path: /
+scanner:
+  enabled: true
+  scan_interval: 300
+  max_concurrency: 50
+  ping_timeout: 1000
+  inactive_timeout: 0
+  start_ip: ""
+  end_ip: ""
+  auto_conflict: true
+  conflict_timeout: 1h0m0s
+  log_level: ""
