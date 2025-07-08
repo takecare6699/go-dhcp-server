@@ -6824,13 +6824,9 @@ func (api *APIServer) handleDeleteStaticBinding(w http.ResponseWriter, r *http.R
 		api.pool.RemoveAllLeasesByMAC(deletedMAC)
 	}
 
-	// 清除设备的网关配置（如果存在）
-	if deletedMAC != "" {
-		if device := api.config.FindDeviceByMAC(deletedMAC); device != nil {
-			device.Gateway = ""
-			log.Printf("已清除设备 %s 的网关配置", deletedMAC)
-		}
-	}
+	// 注意：删除静态IP绑定时，不清除设备的网关配置
+	// 因为设备的网关配置是独立于静态IP绑定的
+	// 用户可能希望保留设备的网关配置，即使删除了静态IP绑定
 
 	// 保存配置到文件
 	if err := api.config.SaveConfig(api.configPath); err != nil {

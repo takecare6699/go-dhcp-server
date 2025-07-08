@@ -425,6 +425,48 @@ func (scanner *NetworkScanner) updateScanResults(devices map[string]*DeviceInfo)
 			device.IsActive = false
 		}
 	}
+
+	// 自动更新设备管理中的设备状态
+	scanner.updateDeviceManagementStatus(devices)
+}
+
+// updateDeviceManagementStatus 更新设备管理中的设备状态
+func (scanner *NetworkScanner) updateDeviceManagementStatus(devices map[string]*DeviceInfo) {
+	// 创建活跃设备的MAC地址映射
+	activeMacs := make(map[string]bool)
+	for mac, device := range devices {
+		if device.IsActive {
+			activeMacs[mac] = true
+		}
+	}
+
+	// 更新设备管理中的设备状态
+	for i, device := range scanner.config.Devices {
+		// 如果设备在扫描结果中且活跃，则设置为在线
+		if activeMacs[device.MAC] {
+			scanner.config.Devices[i].IsActive = true
+			scanner.config.Devices[i].LastSeen = time.Now()
+			log.Printf("网络扫描器检测到设备在线: %s (%s)", device.MAC, device.Hostname)
+		} else {
+			// 如果设备不在扫描结果中，检查是否有活跃的DHCP租约
+			// 如果没有活跃租约，则设置为离线
+			hasActiveLease := false
+			leases := scanner.pool.GetActiveLeases()
+			for _, lease := range leases {
+				if lease.MAC == device.MAC && !lease.IsStatic {
+					hasActiveLease = true
+					break
+				}
+			}
+
+			// 如果没有活跃租约且不在扫描结果中，设置为离线
+			if !hasActiveLease {
+				scanner.config.Devices[i].IsActive = false
+				log.Printf("网络扫描器检测到设备离线: %s (%s)", device.MAC, device.Hostname)
+			}
+		}
+	}
+
 }
 
 // checkIPConflicts 检查IP冲突
