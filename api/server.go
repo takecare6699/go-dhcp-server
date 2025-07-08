@@ -5417,13 +5417,20 @@ curl http://localhost:8080/api/health</pre>
             try {
                 showBeautifulConfirm('🔄 正在启动', '正在启动网络扫描器，请稍候...', 'info');
                 const response = await fetch('/api/scanner/start', { method: 'POST' });
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    showBeautifulConfirm('❌ 启动失败', '启动网络扫描器时发生错误：\\n' + errorText, 'danger');
+                    return;
+                }
+                
                 const result = await response.json();
                 
-                if (response.ok) {
+                if (result.success) {
                     showBeautifulConfirm('✅ 启动成功', '网络扫描器已成功启动！', 'info');
                     updateScannerStatus();
                 } else {
-                    showBeautifulConfirm('❌ 启动失败', '启动网络扫描器时发生错误：\\n' + result.error, 'danger');
+                    showBeautifulConfirm('❌ 启动失败', '启动网络扫描器时发生错误：\\n' + (result.error || result.message || '未知错误'), 'danger');
                 }
             } catch (error) {
                 console.error('启动扫描器失败:', error);
@@ -5435,13 +5442,20 @@ curl http://localhost:8080/api/health</pre>
             try {
                 showBeautifulConfirm('🔄 正在停止', '正在停止网络扫描器，请稍候...', 'info');
                 const response = await fetch('/api/scanner/stop', { method: 'POST' });
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    showBeautifulConfirm('❌ 停止失败', '停止网络扫描器时发生错误：\\n' + errorText, 'danger');
+                    return;
+                }
+                
                 const result = await response.json();
                 
-                if (response.ok) {
+                if (result.success) {
                     showBeautifulConfirm('✅ 停止成功', '网络扫描器已成功停止！', 'info');
                     updateScannerStatus();
                 } else {
-                    showBeautifulConfirm('❌ 停止失败', '停止网络扫描器时发生错误：\\n' + result.error, 'danger');
+                    showBeautifulConfirm('❌ 停止失败', '停止网络扫描器时发生错误：\\n' + (result.error || result.message || '未知错误'), 'danger');
                 }
             } catch (error) {
                 console.error('停止扫描器失败:', error);
