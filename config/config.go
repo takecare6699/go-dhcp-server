@@ -103,7 +103,7 @@ type DeviceInfo struct {
 	Description string    `json:"description" yaml:"description"` // 描述
 	Owner       string    `json:"owner" yaml:"owner"`             // 所有者
 	Hostname    string    `json:"hostname" yaml:"hostname"`       // 主机名
-	Gateway     string    `json:"gateway" yaml:"-"`               // 配置的网关名称
+	Gateway     string    `json:"gateway" yaml:"gateway"`         // 配置的网关名称
 	LastSeen    time.Time `json:"last_seen" yaml:"-"`             // 最后见到时间
 	FirstSeen   time.Time `json:"first_seen" yaml:"-"`            // 首次见到时间
 	IsActive    bool      `json:"is_active" yaml:"-"`             // 是否活跃

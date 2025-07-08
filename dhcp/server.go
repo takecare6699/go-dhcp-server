@@ -510,12 +510,19 @@ func (s *Server) selectGateway(lease *IPLease) *config.Gateway {
 		return s.healthChecker.GetHealthyGateway("")
 	}
 
+	// 优先检查静态绑定的网关配置
 	if lease.IsStatic && lease.Gateway != "" {
 		// 静态绑定指定了网关，优先使用指定的网关（如果健康的话）
 		return s.healthChecker.GetHealthyGateway(lease.Gateway)
 	}
 
-	// 动态分配或静态绑定没有指定网关，使用默认网关
+	// 检查设备配置中的网关
+	if device := s.config.FindDeviceByMAC(lease.MAC); device != nil && device.Gateway != "" {
+		// 设备配置了网关，使用设备指定的网关（如果健康的话）
+		return s.healthChecker.GetHealthyGateway(device.Gateway)
+	}
+
+	// 动态分配或没有指定网关，使用默认网关
 	return s.healthChecker.GetHealthyGateway("")
 }
 

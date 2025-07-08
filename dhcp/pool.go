@@ -489,3 +489,62 @@ func (pool *IPPool) GetConflictIPs() map[string]time.Time {
 	}
 	return result
 }
+
+// GetAvailableIPs 返回所有可用的IP地址（未被占用、未冲突、在池范围内）
+func (pool *IPPool) GetAvailableIPs() []string {
+	pool.CleanupExpiredLeases()
+	pool.mutex.RLock()
+	defer pool.mutex.RUnlock()
+
+	start := binary.BigEndian.Uint32(pool.startIP)
+	end := binary.BigEndian.Uint32(pool.endIP)
+	var available []string
+
+	for i := start; i <= end; i++ {
+		ip := make(net.IP, 4)
+		binary.BigEndian.PutUint32(ip, i)
+		ipStr := ip.String()
+		if pool.isIPAvailable(ipStr) {
+			available = append(available, ipStr)
+		}
+	}
+	return available
+}
+
+// RemoveAllLeasesByMAC 移除指定MAC地址的所有动态租约（不影响静态绑定）
+func (pool *IPPool) RemoveAllLeasesByMAC(clientMAC string) int {
+	pool.mutex.Lock()
+	defer pool.mutex.Unlock()
+
+	mac, err := net.ParseMAC(clientMAC)
+	if err != nil {
+		return 0
+	}
+	macStr := mac.String()
+	count := 0
+
+	// 先查找该MAC对应的IP
+	ipStr, exists := pool.macToIP[macStr]
+	if exists {
+		lease, ok := pool.leases[ipStr]
+		if ok && !lease.IsStatic {
+			delete(pool.leases, ipStr)
+			delete(pool.macToIP, macStr)
+			count++
+		}
+	}
+
+	// 再遍历所有租约，彻底清理该MAC的所有动态租约（防御性）
+	for ip, lease := range pool.leases {
+		if lease.MAC == macStr && !lease.IsStatic {
+			delete(pool.leases, ip)
+			delete(pool.macToIP, macStr)
+			count++
+		}
+	}
+
+	if count > 0 {
+		log.Printf("RemoveAllLeasesByMAC: 清理了 %d 个动态租约 (MAC=%s)", count, macStr)
+	}
+	return count
+}

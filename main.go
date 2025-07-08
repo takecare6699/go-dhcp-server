@@ -256,12 +256,20 @@ func migrateLeases(oldServer, newServer *dhcp.Server) error {
 	// 获取所有活跃租约
 	activeLeases := oldServer.GetActiveLeases()
 
-	log.Printf("发现 %d 个活跃租约需要迁移", len(activeLeases))
-
-	// 迁移每个租约
-	migratedCount := 0
+	// 过滤出只有动态租约（非静态绑定）
+	var dynamicLeases []*dhcp.IPLease
 	for _, lease := range activeLeases {
-		// 对于每个活跃租约，在新服务器中请求相同的IP
+		if !lease.IsStatic {
+			dynamicLeases = append(dynamicLeases, lease)
+		}
+	}
+
+	log.Printf("发现 %d 个活跃租约需要迁移", len(dynamicLeases))
+
+	// 迁移每个动态租约
+	migratedCount := 0
+	for _, lease := range dynamicLeases {
+		// 对于每个动态租约，在新服务器中请求相同的IP
 		newPool := newServer.GetPool()
 
 		// 尝试在新池中分配相同的IP
@@ -273,7 +281,7 @@ func migrateLeases(oldServer, newServer *dhcp.Server) error {
 		}
 	}
 
-	log.Printf("租约迁移完成: %d/%d 成功", migratedCount, len(activeLeases))
+	log.Printf("租约迁移完成: %d/%d 成功", migratedCount, len(dynamicLeases))
 	return nil
 }
 

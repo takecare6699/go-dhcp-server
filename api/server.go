@@ -215,6 +215,7 @@ func (api *APIServer) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/devices", api.handleDevices)
 	mux.HandleFunc("/api/devices/discover", api.handleDeviceDiscover)
 	mux.HandleFunc("/api/devices/batch", api.handleBatchAddDevices)
+	mux.HandleFunc("/api/devices/gateway", api.handleDeviceGateway)
 
 	// 静态绑定管理接口
 	mux.HandleFunc("/api/bindings", api.handleStaticBindings)
@@ -235,6 +236,10 @@ func (api *APIServer) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/config/server", api.handleServerConfig)
 	mux.HandleFunc("/api/config/network", api.handleNetworkConfig)
 	mux.HandleFunc("/api/config/health-check", api.handleHealthCheckConfig)
+	mux.HandleFunc("/api/available-ips", api.handleAvailableIPs)
+
+	// 服务器管理API
+	mux.HandleFunc("/api/server/restart", api.handleServerRestart)
 }
 
 // handleIndex 处理首页请求
@@ -386,6 +391,226 @@ func (api *APIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
             margin: 0; 
             position: relative;
             z-index: 1;
+        }
+        
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: relative;
+            z-index: 2;
+        }
+
+        .header-info {
+            flex: 1;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+
+        .server-status {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 0.5rem;
+        }
+
+        .uptime-display {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+            color: rgba(255, 255, 255, 0.9);
+        }
+
+        .uptime-label {
+            font-weight: 500;
+        }
+
+        .uptime-value {
+            font-weight: 600;
+            background: rgba(255, 255, 255, 0.15);
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            backdrop-filter: blur(5px);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .uptime-value::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+            animation: uptimeShine 3s ease-in-out infinite;
+        }
+
+        @keyframes uptimeShine {
+            0% { left: -100%; }
+            50% { left: 100%; }
+            100% { left: 100%; }
+        }
+
+        /* 亮色主题运行时间 */
+        body.light-theme .uptime-value {
+            background: rgba(116, 185, 255, 0.2);
+            border: 1px solid rgba(116, 185, 255, 0.3);
+            color: #2c3e50;
+        }
+
+        /* 暗色主题运行时间 */
+        body.dark-theme .uptime-value {
+            background: rgba(0, 212, 255, 0.2);
+            border: 1px solid rgba(0, 212, 255, 0.3);
+            color: #e0e0e0;
+        }
+
+        /* 粉色主题运行时间 */
+        body.pink-theme .uptime-value {
+            background: rgba(255, 107, 107, 0.2);
+            border: 1px solid rgba(255, 107, 107, 0.3);
+            color: #c0392b;
+        }
+
+        /* 运行时间容器和进度条 */
+        .uptime-container {
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+            align-items: flex-start;
+        }
+
+        .uptime-progress {
+            width: 100%;
+            height: 3px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .uptime-progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50, #8BC34A);
+            border-radius: 2px;
+            width: 0%;
+            transition: width 0.5s ease;
+            position: relative;
+        }
+
+        .uptime-progress-bar::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+            animation: progressShine 2s ease-in-out infinite;
+        }
+
+        @keyframes progressShine {
+            0% { transform: translateX(-100%); }
+            50% { transform: translateX(100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        /* 亮色主题进度条 */
+        body.light-theme .uptime-progress {
+            background: rgba(116, 185, 255, 0.1);
+        }
+
+        body.light-theme .uptime-progress-bar {
+            background: linear-gradient(90deg, #74b9ff, #00b894);
+        }
+
+        /* 暗色主题进度条 */
+        body.dark-theme .uptime-progress {
+            background: rgba(0, 212, 255, 0.1);
+        }
+
+        body.dark-theme .uptime-progress-bar {
+            background: linear-gradient(90deg, #00d4ff, #0099ff);
+        }
+
+        /* 粉色主题进度条 */
+        body.pink-theme .uptime-progress {
+            background: rgba(255, 107, 107, 0.1);
+        }
+
+        body.pink-theme .uptime-progress-bar {
+            background: linear-gradient(90deg, #ff6b6b, #ffa726);
+        }
+
+        .restart-btn {
+            background: rgba(255, 255, 255, 0.2);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            padding: 0.7rem 1.5rem;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            backdrop-filter: blur(10px);
+            white-space: nowrap;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+
+        .restart-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+            border-color: rgba(255, 255, 255, 0.5);
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .restart-btn:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        }
+
+        /* 亮色主题重启按钮 */
+        body.light-theme .restart-btn {
+            background: rgba(116, 185, 255, 0.25);
+            border: 2px solid rgba(116, 185, 255, 0.4);
+            color: white;
+        }
+
+        body.light-theme .restart-btn:hover {
+            background: rgba(116, 185, 255, 0.35);
+            border-color: rgba(116, 185, 255, 0.6);
+            box-shadow: 0 5px 15px rgba(116, 185, 255, 0.3);
+        }
+
+        /* 暗色主题重启按钮 */
+        body.dark-theme .restart-btn {
+            background: rgba(0, 212, 255, 0.25);
+            border: 2px solid rgba(0, 212, 255, 0.4);
+            color: white;
+        }
+
+        body.dark-theme .restart-btn:hover {
+            background: rgba(0, 212, 255, 0.35);
+            border-color: rgba(0, 212, 255, 0.6);
+            box-shadow: 0 5px 15px rgba(0, 212, 255, 0.3);
+        }
+
+        /* 粉色主题重启按钮 */
+        body.pink-theme .restart-btn {
+            background: rgba(255, 107, 107, 0.25);
+            border: 2px solid rgba(255, 107, 107, 0.4);
+            color: white;
+        }
+
+        body.pink-theme .restart-btn:hover {
+            background: rgba(255, 107, 107, 0.35);
+            border-color: rgba(255, 107, 107, 0.6);
+            box-shadow: 0 5px 15px rgba(255, 107, 107, 0.3);
         }
         
         @keyframes headerShine {
@@ -806,23 +1031,23 @@ func (api *APIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
          }
          
          body.dark-theme .stat-value { 
-             color: #00ff41; /* 亮绿色备用颜色 */
-             background: linear-gradient(135deg, #00ff41 0%, #00d4ff 50%, #0099ff 100%);
+             color: #00d4ff; /* 更柔和的青色 */
+             background: linear-gradient(135deg, #00d4ff 0%, #0099ff 50%, #0066cc 100%);
              -webkit-background-clip: text;
              -webkit-text-fill-color: transparent;
              background-clip: text;
-             text-shadow: 0 0 25px rgba(0, 255, 65, 0.6);
+             text-shadow: 0 0 15px rgba(0, 212, 255, 0.4);
              font-weight: 700;
          }
          
          /* 暗色主题不支持渐变文字的浏览器备用样式 */
          body.dark-theme .stat-value:not(.gradient-text) {
-             color: #00ff41 !important;
+             color: #00d4ff !important;
              background: none !important;
              -webkit-background-clip: initial !important;
              -webkit-text-fill-color: initial !important;
              background-clip: initial !important;
-             text-shadow: 0 0 25px rgba(0, 255, 65, 0.6) !important;
+             text-shadow: 0 0 15px rgba(0, 212, 255, 0.4) !important;
              font-weight: 700 !important;
          }
          
@@ -834,7 +1059,8 @@ func (api *APIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
         body.dark-theme .btn-primary:hover { background: #357abd; }
         body.dark-theme .btn-secondary { background: #5a6c7d; }
         body.dark-theme .btn-success { background: #27ae60; }
-        body.dark-theme .btn-warning { background: #f39c12; }
+        body.dark-theme .btn-warning { background: #00d4ff; }
+        body.dark-theme .btn-warning:hover { background: #0099ff; }
         body.dark-theme .btn-danger { background: #e74c3c; }
         body.dark-theme .search-box, body.dark-theme .form-control { background: #3a3a3a; color: #e0e0e0; border-color: #555; }
         body.dark-theme .search-box:focus, body.dark-theme .form-control:focus { border-color: #4a90e2; }
@@ -851,8 +1077,47 @@ func (api *APIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
         body.dark-theme .config-form { background: #2d2d2d; }
         body.dark-theme .config-section { background: #3a3a3a; border-color: #555; }
         body.dark-theme .config-section h3 { color: #4a90e2; }
+
+        /* 自动补全样式 */
+        .autocomplete-list {
+            border: 1px solid #ddd;
+            border-top: none;
+            max-height: 150px;
+            overflow-y: auto;
+            background: white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            font-size: 14px;
+            border-radius: 0 0 6px 6px;
+            margin-top: -2px;
+            padding: 0;
+            z-index: 1000;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .autocomplete-item {
+            padding: 6px 10px;
+            cursor: pointer;
+            border-bottom: 1px solid #f0f0f0;
+            transition: background 0.15s;
+            background: #fff;
+        }
+        .autocomplete-item:last-child { border-bottom: none; }
+        .autocomplete-item:hover, .autocomplete-item.active {
+            background: #e6f7ff;
+            color: #1890ff;
+        }
+
+        body.dark-theme .autocomplete-list {
+            background: #3a3a3a;
+            border-color: #555;
+            color: #e0e0e0;
+        }
+
+        body.dark-theme .autocomplete-item:hover {
+            background-color: #4a4a4a;
+        }
         
-        @media (max-width: 768px) { .container { padding: 10px; } .header { padding: 1rem; margin-bottom: 1rem; } .header h1 { font-size: 1.4rem; } .header p { font-size: 0.85rem; } .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 0.8rem; margin-bottom: 1rem; } .stat-card { padding: 0.8rem; } .stat-value { font-size: 1.3rem; } .stat-label { font-size: 0.75rem; } .tab-content { padding: 1rem; min-height: 500px; } .controls { flex-direction: column; align-items: stretch; } .search-box { width: 100%; } .table { font-size: 0.8rem; } .modal-content { width: 95%; margin: 2% auto; } .confirm-modal-content { width: 95%; margin: 10% auto; } }
+        @media (max-width: 768px) { .container { padding: 10px; } .header { padding: 1rem; margin-bottom: 1rem; } .header h1 { font-size: 1.4rem; } .header p { font-size: 0.85rem; } .header-content { flex-direction: column; gap: 1rem; align-items: flex-start; } .header-actions { width: 100%; justify-content: center; } .server-status { align-items: center; } .uptime-display { font-size: 0.8rem; } .uptime-value { padding: 0.15rem 0.4rem; } .restart-btn { padding: 0.6rem 1.2rem; font-size: 0.85rem; } .stats-grid { grid-template-columns: repeat(2, 1fr); gap: 0.8rem; margin-bottom: 1rem; } .stat-card { padding: 0.8rem; } .stat-value { font-size: 1.3rem; } .stat-label { font-size: 0.75rem; } .tab-content { padding: 1rem; min-height: 500px; } .controls { flex-direction: column; align-items: stretch; } .search-box { width: 100%; } .table { font-size: 0.8rem; } .modal-content { width: 95%; margin: 2% auto; } .confirm-modal-content { width: 95%; margin: 10% auto; } }
         @media (max-width: 1024px) { 
             .config-editor { 
                 grid-template-columns: 1fr; 
@@ -1047,8 +1312,28 @@ func (api *APIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
         
         <div class="container">
             <div class="header">
-                <h1>🌐 DHCP服务器管理</h1>
-                <p>企业级DHCP服务器 - 配置管理与监控平台</p>
+                <div class="header-content">
+                    <div class="header-info">
+                        <h1>🌐 DHCP服务器管理</h1>
+                        <p>企业级DHCP服务器 - 配置管理与监控平台</p>
+                    </div>
+                    <div class="header-actions">
+                        <div class="server-status">
+                                    <div class="uptime-display">
+            <span class="uptime-label">运行时间:</span>
+            <div class="uptime-container">
+                <span class="uptime-value" id="serverUptime">计算中...</span>
+                <div class="uptime-progress">
+                    <div class="uptime-progress-bar" id="uptimeProgress"></div>
+                </div>
+            </div>
+        </div>
+                            <button class="btn btn-warning restart-btn" onclick="quickRestartServer()" title="快速重启DHCP服务器">
+                                🔄 重启服务器
+                            </button>
+                        </div>
+                    </div>
+                </div>
             </div>
 
         <div class="stats-grid" id="statsGrid">
@@ -1514,6 +1799,7 @@ func (api *APIServer) handleIndex(w http.ResponseWriter, r *http.Request) {
                             <div class="form-actions">
                                 <button type="button" class="btn btn-primary" onclick="saveServerConfig()">保存服务器配置</button>
                                 <button type="button" class="btn btn-secondary" onclick="loadServerConfig(true)">重新加载</button>
+                                <button type="button" class="btn btn-warning" onclick="quickRestartServer()" title="快速重启DHCP服务器">🔄 重启服务器</button>
                             </div>
                         </form>
                     </div>
@@ -1731,11 +2017,21 @@ sudo ./dhcp-server -config my-config.yaml
                                 <ol>
                                     <li>在"设备管理"页面找到目标设备</li>
                                     <li>点击设备行末的"配置静态IP"按钮</li>
-                                    <li>设置绑定别名和IP地址</li>
-                                    <li>选择指定网关（可选）</li>
+                                    <li>系统会自动生成唯一的绑定别名</li>
+                                    <li>设置IP地址</li>
+                                    <li>设置主机名（可选）</li>
                                     <li>保存配置</li>
                                 </ol>
-                                <p><strong>注意</strong>: 静态IP必须在配置的地址池范围内，且不能与其他设备冲突。</p>
+                                <p><strong>注意</strong>: 静态IP必须在配置的地址池范围内，且不能与其他设备冲突。绑定别名由系统自动生成，确保唯一性。</p>
+
+                                <h3>🌐 指定设备网关</h3>
+                                <ol>
+                                    <li>在"设备管理"页面找到目标设备</li>
+                                    <li>点击设备行末的"指定网关"按钮</li>
+                                    <li>在弹出的对话框中选择要使用的网关</li>
+                                    <li>点击"保存"按钮完成配置</li>
+                                </ol>
+                                <p><strong>说明</strong>: 网关配置独立于静态IP配置，可以为任何设备单独指定网关。</p>
                             </div>
 
                             <div class="help-card">
@@ -1981,21 +2277,17 @@ curl http://localhost:8080/api/health</pre>
                         <input type="text" id="staticMAC" class="form-control" readonly>
                     </div>
                     <div class="form-group">
-                        <label for="staticAlias">绑定别名 *</label>
-                        <input type="text" id="staticAlias" class="form-control" placeholder="例如：server01、printer01" required>
+                        <label for="staticAlias">绑定别名</label>
+                        <input type="text" id="staticAlias" class="form-control" readonly>
+                        <small class="form-help">系统自动生成的唯一别名</small>
                     </div>
-                    <div class="form-group">
+                    <div class="form-group" style="position:relative;">
                         <label for="staticIP">IP地址 *</label>
-                        <input type="text" id="staticIP" class="form-control" placeholder="例如：192.168.1.100" required>
-                        <small class="form-help">请输入网段内的可用IP地址</small>
+                        <input type="text" id="staticIP" class="form-control" placeholder="例如：192.168.1.100" required autocomplete="off" oninput="onStaticIPInput()" onfocus="onStaticIPInput()" onblur="setTimeout(hideIPAutocomplete, 200)">
+                        <div id="staticIPAutocomplete" class="autocomplete-list" style="display:none;position:absolute;z-index:1000;background:#fff;border:1px solid #ccc;max-height:150px;overflow-y:auto;width:100%;left:0;right:0;box-sizing:border-box;"></div>
+                        <small class="form-help">请输入网段内的可用IP地址，支持Tab键快速补齐</small>
                     </div>
-                    <div class="form-group">
-                        <label for="staticGateway">指定网关</label>
-                        <select id="staticGateway" class="form-control">
-                            <option value="">使用默认网关</option>
-                        </select>
-                        <small class="form-help">选择设备使用的网关，留空则使用默认网关</small>
-                    </div>
+
                     <div class="form-group">
                         <label for="staticHostname">主机名</label>
                         <input type="text" id="staticHostname" class="form-control" placeholder="可选：设置主机名">
@@ -2099,6 +2391,39 @@ curl http://localhost:8080/api/health</pre>
         </div>
     </div>
 
+    <!-- 指定网关模态框 -->
+    <div id="deviceGatewayModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title">指定网关</h2>
+                <span class="close" onclick="closeDeviceGatewayModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <form id="deviceGatewayForm">
+                    <div class="form-group">
+                        <label for="deviceGatewayMAC">设备MAC地址</label>
+                        <input type="text" id="deviceGatewayMAC" class="form-control" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label for="deviceGatewayName">设备名称</label>
+                        <input type="text" id="deviceGatewayName" class="form-control" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label for="deviceGatewaySelect">选择网关</label>
+                        <select id="deviceGatewaySelect" class="form-control">
+                            <option value="">使用默认网关</option>
+                        </select>
+                        <small class="form-help">选择设备使用的网关，留空则使用默认网关</small>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-modal btn-modal-secondary" onclick="closeDeviceGatewayModal()">取消</button>
+                <button type="button" class="btn-modal btn-modal-primary" onclick="saveDeviceGateway()">保存</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         let currentLeaseMode = 'active';
         let allLeases = [];
@@ -2108,6 +2433,8 @@ curl http://localhost:8080/api/health</pre>
         let staticBindings = {}; // 缓存静态绑定信息，key为MAC地址
         let autoRefreshInterval;
         let configContent = '';
+        let availableIPs = []; // 缓存可用IP列表
+        let staticIPActiveIndex = -1;
 
         // 美化的确认对话框函数
         function showBeautifulConfirm(title, message, type = 'warning') {
@@ -2206,6 +2533,7 @@ curl http://localhost:8080/api/health</pre>
             loadActiveLeases();
             loadGatewayStatus();
             loadDevices();
+            updateServerUptime(); // 立即更新运行时间
             
             // 检查配置管理标签页是否需要初始化（延迟执行以确保DOM完全就绪）
             setTimeout(() => {
@@ -2261,6 +2589,7 @@ curl http://localhost:8080/api/health</pre>
         function startAutoRefresh() {
             autoRefreshInterval = setInterval(() => {
                 loadStats();
+                updateServerUptime();
                 if (document.querySelector('.tab-pane.active').id === 'leases') {
                     if (currentLeaseMode === 'active') {
                         loadActiveLeases();
@@ -2422,6 +2751,111 @@ curl http://localhost:8080/api/health</pre>
             } catch (error) {
                 console.error('加载统计信息失败:', error);
             }
+        }
+
+        // 更新服务器运行时间显示
+        async function updateServerUptime() {
+            try {
+                const response = await fetch('/api/health');
+                const health = await response.json();
+                const uptimeElement = document.getElementById('serverUptime');
+                const progressBar = document.getElementById('uptimeProgress');
+                
+                if (uptimeElement && health.uptime) {
+                    // 格式化运行时间为中文格式
+                    const formattedUptime = formatUptimeToChinese(health.uptime);
+                    uptimeElement.textContent = formattedUptime;
+                    
+                    // 计算进度条宽度（基于运行时间的秒数）
+                    if (progressBar) {
+                        const uptimeStr = health.uptime;
+                        const seconds = parseUptimeToSeconds(uptimeStr);
+                        const progress = Math.min((seconds / 3600) * 100, 100); // 基于1小时作为100%
+                        progressBar.style.width = progress + '%';
+                    }
+                }
+            } catch (error) {
+                console.error('更新运行时间失败:', error);
+                const uptimeElement = document.getElementById('serverUptime');
+                if (uptimeElement) {
+                    uptimeElement.textContent = '获取失败';
+                }
+            }
+        }
+
+        // 解析运行时间字符串为秒数
+        function parseUptimeToSeconds(uptimeStr) {
+            // 处理 "6.425657458s" 格式
+            const secondsMatch = uptimeStr.match(/(\d+\.?\d*)s/);
+            if (secondsMatch) {
+                return parseFloat(secondsMatch[1]);
+            }
+            
+            // 处理 "1h2m3s" 格式
+            const match = uptimeStr.match(/(\d+)h(\d+)m(\d+)s/);
+            if (match) {
+                const hours = parseInt(match[1]);
+                const minutes = parseInt(match[2]);
+                const seconds = parseInt(match[3]);
+                return hours * 3600 + minutes * 60 + seconds;
+            }
+            return 0;
+        }
+
+        // 格式化运行时间为中文格式
+        function formatUptimeToChinese(uptimeStr) {
+            // 处理 "6.425657458s" 格式
+            const secondsMatch = uptimeStr.match(/(\d+\.?\d*)s/);
+            if (secondsMatch) {
+                const totalSeconds = parseFloat(secondsMatch[1]);
+                return formatSecondsToChinese(totalSeconds);
+            }
+            
+            // 处理 "1h2m3s" 格式
+            const match = uptimeStr.match(/(\d+)h(\d+)m(\d+)s/);
+            if (match) {
+                const hours = parseInt(match[1]);
+                const minutes = parseInt(match[2]);
+                const seconds = parseInt(match[3]);
+                
+                let result = '';
+                
+                if (hours > 0) {
+                    result += hours + '小时';
+                }
+                if (minutes > 0) {
+                    result += minutes + '分钟';
+                }
+                if (seconds > 0 || (hours === 0 && minutes === 0)) {
+                    result += seconds + '秒';
+                }
+                
+                return result;
+            }
+            
+            // 如果无法解析，返回原始字符串
+            return uptimeStr;
+        }
+
+        // 将秒数格式化为中文时间格式
+        function formatSecondsToChinese(totalSeconds) {
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = Math.floor(totalSeconds % 60);
+            
+            let result = '';
+            
+            if (hours > 0) {
+                result += hours + '小时';
+            }
+            if (minutes > 0) {
+                result += minutes + '分钟';
+            }
+            if (seconds > 0 || (hours === 0 && minutes === 0)) {
+                result += seconds + '秒';
+            }
+            
+            return result;
         }
 
         function toggleLeaseMode() {
@@ -2674,6 +3108,7 @@ curl http://localhost:8080/api/health</pre>
                                                 '<a href="#" onclick="editStaticIP(\'' + device.mac + '\'); closeAllDropdowns();" style="display: block; padding: 8px 12px; text-decoration: none; color: #ff9800; border-bottom: 1px solid #eee;">⚙️ 修改静态IP</a>' +
                                                 '<a href="#" onclick="deleteStaticIP(\'' + device.mac + '\'); closeAllDropdowns();" style="display: block; padding: 8px 12px; text-decoration: none; color: #f44336; border-bottom: 1px solid #eee;">🗑️ 删除静态IP</a>' :
                                                 '<a href="#" onclick="configureStaticIP(\'' + device.mac + '\'); closeAllDropdowns();" style="display: block; padding: 8px 12px; text-decoration: none; color: #2196f3; border-bottom: 1px solid #eee;">📌 配置静态IP</a>') +
+                                            '<a href="#" onclick="configureGateway(\'' + device.mac + '\'); closeAllDropdowns();" style="display: block; padding: 8px 12px; text-decoration: none; color: #4caf50; border-bottom: 1px solid #eee;">🌐 指定网关</a>' +
                                             '<a href="#" onclick="deleteDevice(\'' + device.mac + '\'); closeAllDropdowns();" style="display: block; padding: 8px 12px; text-decoration: none; color: #f44336;">🗑️ 删除设备</a>' +
                                         '</div>' +
                                     '</div>' +
@@ -3239,6 +3674,56 @@ curl http://localhost:8080/api/health</pre>
             }
         }
 
+        // 快速重启DHCP服务器
+        async function quickRestartServer() {
+            const confirmed = await showBeautifulConfirm(
+                '🔄 快速重启服务器',
+                '确定要重启DHCP服务器吗？\\n\\n⚠️ 这会重启整个DHCP服务，短暂影响网络服务。\\n📋 所有配置和状态都会保持不变。',
+                'warning'
+            );
+            if (!confirmed) {
+                return;
+            }
+            
+            // 更新按钮状态
+            const restartBtn = document.querySelector('.restart-btn');
+            if (restartBtn) {
+                restartBtn.disabled = true;
+                restartBtn.innerHTML = '⏳ 重启中...';
+                restartBtn.style.opacity = '0.6';
+            }
+            
+            try {
+                showLoading('正在重启DHCP服务器...');
+                const response = await fetch('/api/server/restart', { method: 'POST' });
+                const result = await response.json();
+                
+                hideLoading();
+                
+                if (result.success) {
+                    showBeautifulConfirm('✅ 重启成功', result.message || 'DHCP服务器已成功重启！', 'info');
+                    // 延迟刷新数据，等待服务器完全启动
+                    setTimeout(() => {
+                        loadStats();
+                        loadGatewayStatus();
+                        loadDevices();
+                    }, 3000);
+                } else {
+                    showBeautifulConfirm('❌ 重启失败', result.error || '服务器重启失败', 'danger');
+                }
+            } catch (error) {
+                hideLoading();
+                showBeautifulConfirm('❌ 重启失败', '服务器重启失败: ' + error.message, 'danger');
+            } finally {
+                // 恢复按钮状态
+                if (restartBtn) {
+                    restartBtn.disabled = false;
+                    restartBtn.innerHTML = '🔄 重启服务器';
+                    restartBtn.style.opacity = '1';
+                }
+            }
+        }
+
         function downloadConfig() {
             const content = document.getElementById('configEditor').value;
             const blob = new Blob([content], { type: 'text/yaml' });
@@ -3501,7 +3986,7 @@ curl http://localhost:8080/api/health</pre>
 
         async function deleteDevice(mac) {
             const device = allDevices.find(d => d.mac === mac);
-            const deviceName = device ? (device.owner || device.hostname || mac) : mac;
+            const deviceName = device ? (device.hostname || device.owner || mac) : mac;
             
             // 使用更美观的确认对话框
             const confirmed = await showBeautifulConfirm(
@@ -3550,6 +4035,9 @@ curl http://localhost:8080/api/health</pre>
             // 显示加载提示
             showLoading('正在准备配置表单...');
             
+            // 加载可用IP列表
+            await fetchAvailableIPs();
+            
             const modal = document.getElementById('staticIPModal');
             
             // 清除编辑模式标记
@@ -3559,16 +4047,13 @@ curl http://localhost:8080/api/health</pre>
             // 填充MAC地址
             document.getElementById('staticMAC').value = mac;
             
-            // 清空其他字段
-            document.getElementById('staticAlias').value = '';
+            // 自动生成唯一别名
+            const generatedAlias = await generateUniqueAlias(device.hostname || device.owner || mac.replace(/:/g, ''));
+            document.getElementById('staticAlias').value = generatedAlias;
             document.getElementById('staticIP').value = '';
-            document.getElementById('staticGateway').value = '';
-            document.getElementById('staticHostname').value = device.owner || '';
+            document.getElementById('staticHostname').value = device.hostname || '';
             
             try {
-                // 加载网关列表
-                await loadGatewaysForSelect();
-                
                 // 添加小延迟确保加载提示可见
                 await new Promise(resolve => setTimeout(resolve, 300));
                 
@@ -3684,19 +4169,24 @@ curl http://localhost:8080/api/health</pre>
             showLoading('正在加载编辑表单...');
             
             try {
+                // 加载可用IP列表
+                await fetchAvailableIPs();
+                
                 // 填充表单数据
                 document.getElementById('staticMAC').value = mac;
-                document.getElementById('staticAlias').value = binding.alias || '';
+                // 如果已有别名，保持原样；否则自动生成
+                if (binding.alias) {
+                    document.getElementById('staticAlias').value = binding.alias;
+                } else {
+                    const generatedAlias = await generateUniqueAlias(device.hostname || device.owner || mac.replace(/:/g, ''));
+                    document.getElementById('staticAlias').value = generatedAlias;
+                }
                 document.getElementById('staticIP').value = binding.ip || '';
-                document.getElementById('staticGateway').value = binding.gateway || '';
-                document.getElementById('staticHostname').value = binding.hostname || '';
+                document.getElementById('staticHostname').value = binding.hostname || device.hostname || '';
                 
                 // 标记为编辑模式
                 document.getElementById('staticIPModal').setAttribute('data-edit-mode', 'true');
                 document.getElementById('staticIPModal').setAttribute('data-old-alias', binding.alias);
-                
-                // 加载网关列表
-                await loadGatewaysForSelect();
                 
                 hideLoading(); // 隐藏加载提示
                 
@@ -3724,7 +4214,7 @@ curl http://localhost:8080/api/health</pre>
                 return;
             }
             
-            const deviceName = device.owner || device.hostname || mac;
+            const deviceName = device.hostname || device.owner || mac;
             
             // 使用更美观的确认对话框
             const confirmed = await showBeautifulConfirm(
@@ -3797,31 +4287,12 @@ curl http://localhost:8080/api/health</pre>
             }
         });
 
-        async function loadGatewaysForSelect() {
-            try {
-                const response = await fetch('/api/gateways');
-                const gateways = await response.json();
-                
-                const select = document.getElementById('staticGateway');
-                // 保留默认选项
-                select.innerHTML = '<option value="">使用默认网关</option>';
-                
-                Object.entries(gateways).forEach(([name, gateway]) => {
-                    const option = document.createElement('option');
-                    option.value = name;
-                    option.textContent = name + ' (' + gateway.ip + ')' + (gateway.is_default ? ' [默认]' : '');
-                    select.appendChild(option);
-                });
-            } catch (error) {
-                console.error('加载网关列表失败:', error);
-            }
-        }
+
 
         async function saveStaticIP() {
             const mac = document.getElementById('staticMAC').value;
             const alias = document.getElementById('staticAlias').value.trim();
             const ip = document.getElementById('staticIP').value.trim();
-            const gateway = document.getElementById('staticGateway').value;
             const hostname = document.getElementById('staticHostname').value.trim();
             
             if (!alias) {
@@ -3834,10 +4305,8 @@ curl http://localhost:8080/api/health</pre>
                 return;
             }
             
-            // 简单的IP格式验证
-            const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
-            if (!ipRegex.test(ip)) {
-                showBeautifulConfirm('❌ 验证失败', 'IP地址格式不正确', 'danger');
+            // 使用新的IP校验函数
+            if (!(await validateStaticIP())) {
                 return;
             }
             
@@ -3849,7 +4318,6 @@ curl http://localhost:8080/api/health</pre>
                 alias: alias,
                 mac: mac,
                 ip: ip,
-                gateway: gateway,
                 hostname: hostname
             };
             
@@ -3889,6 +4357,234 @@ curl http://localhost:8080/api/health</pre>
                 const action = isEditMode ? '更新' : '配置';
                 console.error(action + '静态IP失败:', error);
                 showBeautifulConfirm('❌ ' + action + '失败', action + '静态IP失败: ' + error.message, 'danger');
+            }
+        }
+
+        // 自动补全和校验相关函数
+        async function fetchAvailableIPs() {
+            try {
+                const res = await fetch('/api/available-ips');
+                availableIPs = await res.json();
+            } catch (e) {
+                availableIPs = [];
+            }
+        }
+
+        function onStaticIPInput() {
+            const input = document.getElementById('staticIP');
+            const val = input.value.trim();
+            if (!availableIPs.length) return;
+            if (!val) { hideIPAutocomplete(); return; }
+            const suggestions = availableIPs.filter(ip => ip.startsWith(val)).slice(0, 5);
+            showIPAutocomplete(suggestions);
+            staticIPActiveIndex = -1;
+        }
+
+        function showIPAutocomplete(suggestions) {
+            const list = document.getElementById('staticIPAutocomplete');
+            if (!suggestions.length) { list.style.display = 'none'; return; }
+            list.innerHTML = suggestions.map((ip, idx) => '<div class="autocomplete-item" id="staticIPAutoItem' + idx + '" onclick="selectStaticIPSuggestion(\'' + ip + '\')">' + ip + '</div>').join('');
+            list.style.display = 'block';
+            staticIPActiveIndex = -1;
+            
+            // 确保下拉列表不超出屏幕边界
+            const input = document.getElementById('staticIP');
+            const inputRect = input.getBoundingClientRect();
+            const listRect = list.getBoundingClientRect();
+            
+            // 检查右侧是否溢出
+            if (listRect.right > window.innerWidth) {
+                list.style.width = (window.innerWidth - inputRect.left - 10) + 'px';
+            }
+        }
+
+        function hideIPAutocomplete() {
+            document.getElementById('staticIPAutocomplete').style.display = 'none';
+            staticIPActiveIndex = -1;
+        }
+
+        function selectStaticIPSuggestion(ip) {
+            document.getElementById('staticIP').value = ip;
+            hideIPAutocomplete();
+        }
+
+        async function validateStaticIP() {
+            const ip = document.getElementById('staticIP').value.trim();
+            if (!ip) return false;
+            // 简单格式校验
+            const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
+            if (!ipRegex.test(ip)) {
+                showBeautifulConfirm('❌ IP格式错误', '请输入正确的IPv4地址', 'danger');
+                return false;
+            }
+            if (!availableIPs.length) await fetchAvailableIPs();
+            if (!availableIPs.includes(ip)) {
+                showBeautifulConfirm('❌ IP不可用', '该IP已被占用或不在可用范围', 'danger');
+                return false;
+            }
+            return true;
+        }
+
+        // 键盘事件支持Tab补齐、上下键选择、回车选中
+        document.addEventListener('DOMContentLoaded', function() {
+            const input = document.getElementById('staticIP');
+            input.addEventListener('keydown', function(e) {
+                const list = document.getElementById('staticIPAutocomplete');
+                const items = list.querySelectorAll('.autocomplete-item');
+                if (list.style.display === 'block' && items.length > 0) {
+                    if (e.key === 'Tab') {
+                        e.preventDefault();
+                        input.value = items[staticIPActiveIndex >= 0 ? staticIPActiveIndex : 0].textContent;
+                        hideIPAutocomplete();
+                    } else if (e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        staticIPActiveIndex = (staticIPActiveIndex + 1) % items.length;
+                        updateStaticIPActiveItem(items);
+                    } else if (e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        staticIPActiveIndex = (staticIPActiveIndex - 1 + items.length) % items.length;
+                        updateStaticIPActiveItem(items);
+                    } else if (e.key === 'Enter') {
+                        if (staticIPActiveIndex >= 0) {
+                            e.preventDefault();
+                            input.value = items[staticIPActiveIndex].textContent;
+                            hideIPAutocomplete();
+                        }
+                    }
+                }
+            });
+        });
+        function updateStaticIPActiveItem(items) {
+            items.forEach((item, idx) => {
+                if (idx === staticIPActiveIndex) {
+                    item.classList.add('active');
+                    item.scrollIntoView({block: 'nearest'});
+                } else {
+                    item.classList.remove('active');
+                }
+            });
+        }
+
+        // 生成唯一别名函数
+        async function generateUniqueAlias(baseName) {
+            // 清理基础名称，只保留字母、数字和下划线
+            let cleanName = baseName.replace(/[^a-zA-Z0-9_]/g, '').substring(0, 10);
+            if (!cleanName) {
+                cleanName = 'device';
+            }
+            
+            // 获取所有现有的静态绑定
+            try {
+                const response = await fetch('/api/static-bindings');
+                const bindings = await response.json();
+                
+                // 检查是否已存在相同别名
+                const existingAliases = bindings.map(b => b.alias);
+                let counter = 1;
+                let alias = cleanName;
+                
+                while (existingAliases.includes(alias)) {
+                    alias = cleanName + '_' + counter;
+                    counter++;
+                }
+                
+                return alias;
+            } catch (error) {
+                console.error('获取现有别名失败:', error);
+                // 如果获取失败，使用时间戳生成唯一别名
+                return cleanName + '_' + Date.now().toString().slice(-6);
+            }
+        }
+
+        // 指定网关相关函数
+        async function configureGateway(mac) {
+            const device = allDevices.find(d => d.mac === mac);
+            if (!device) {
+                showBeautifulConfirm('❌ 错误', '设备未找到', 'danger');
+                return;
+            }
+            
+            // 显示加载提示
+            showLoading('正在准备网关配置...');
+            
+            try {
+                // 填充设备信息
+                document.getElementById('deviceGatewayMAC').value = mac;
+                document.getElementById('deviceGatewayName').value = device.hostname || device.owner || '未知设备';
+                
+                // 加载网关列表
+                await loadDeviceGatewaysForSelect();
+                
+                // 设置当前网关（如果有）
+                const currentGateway = device.gateway || '';
+                document.getElementById('deviceGatewaySelect').value = currentGateway;
+                
+                hideLoading(); // 隐藏加载提示
+                
+                // 显示模态框
+                document.getElementById('deviceGatewayModal').style.display = 'block';
+            } catch (error) {
+                hideLoading(); // 隐藏加载提示
+                console.error('准备网关配置失败:', error);
+                showBeautifulConfirm('❌ 错误', '准备网关配置失败: ' + error.message, 'danger');
+            }
+        }
+
+        async function loadDeviceGatewaysForSelect() {
+            try {
+                const response = await fetch('/api/gateways');
+                const gateways = await response.json();
+                
+                const select = document.getElementById('deviceGatewaySelect');
+                // 保留默认选项
+                select.innerHTML = '<option value="">使用默认网关</option>';
+                
+                Object.entries(gateways).forEach(([name, gateway]) => {
+                    const option = document.createElement('option');
+                    option.value = name;
+                    option.textContent = name + ' (' + gateway.ip + ')' + (gateway.is_default ? ' [默认]' : '');
+                    select.appendChild(option);
+                });
+            } catch (error) {
+                console.error('加载网关列表失败:', error);
+            }
+        }
+
+        function closeDeviceGatewayModal() {
+            document.getElementById('deviceGatewayModal').style.display = 'none';
+        }
+
+        async function saveDeviceGateway() {
+            const mac = document.getElementById('deviceGatewayMAC').value;
+            const gateway = document.getElementById('deviceGatewaySelect').value;
+            
+            // 显示加载提示
+            showLoading('正在保存网关配置...');
+            
+            try {
+                const response = await fetch('/api/devices/gateway', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        mac: mac,
+                        gateway: gateway
+                    })
+                });
+                
+                hideLoading(); // 隐藏加载提示
+                
+                if (response.ok) {
+                    showBeautifulConfirm('✅ 保存成功', '设备网关配置已保存！设备重新连接后生效。', 'info');
+                    closeDeviceGatewayModal();
+                    loadDevices(); // 刷新设备列表
+                } else {
+                    const errorData = await response.json();
+                    showBeautifulConfirm('❌ 保存失败', errorData.error || '未知错误', 'danger');
+                }
+            } catch (error) {
+                hideLoading(); // 隐藏加载提示
+                console.error('保存网关配置失败:', error);
+                showBeautifulConfirm('❌ 保存失败', '保存网关配置失败: ' + error.message, 'danger');
             }
         }
 
@@ -5441,12 +6137,23 @@ func (api *APIServer) handleGetDevices(w http.ResponseWriter, r *http.Request) {
 		if device := api.config.FindDeviceByMAC(mac); device != nil {
 			deviceCopy := *device
 
-			// 检查设备是否活跃
+			// 检查设备是否活跃（静态绑定不算活跃）
 			activeLeases := api.pool.GetActiveLeases()
 			for _, lease := range activeLeases {
-				if lease.MAC == deviceCopy.MAC {
+				if lease.MAC == deviceCopy.MAC && !lease.IsStatic {
 					deviceCopy.IsActive = true
 					break
+				}
+			}
+
+			// 检查网络扫描器是否检测到设备活跃
+			if !deviceCopy.IsActive && api.scanner != nil {
+				scanResults := api.scanner.GetScanResults()
+				for _, scanDevice := range scanResults {
+					if scanDevice.MAC == deviceCopy.MAC && scanDevice.IsActive {
+						deviceCopy.IsActive = true
+						break
+					}
 				}
 			}
 
@@ -5454,11 +6161,15 @@ func (api *APIServer) handleGetDevices(w http.ResponseWriter, r *http.Request) {
 			if binding := api.config.FindBindingByMAC(deviceCopy.MAC); binding != nil {
 				deviceCopy.HasStaticIP = true
 				deviceCopy.StaticIP = binding.IP
-				deviceCopy.Gateway = binding.Gateway
+				// 如果静态绑定中配置了网关，优先使用绑定的网关
+				if binding.Gateway != "" {
+					deviceCopy.Gateway = binding.Gateway
+				}
+				// 如果静态绑定中没有网关配置，保持设备自身的网关配置不变
 			} else {
 				deviceCopy.HasStaticIP = false
 				deviceCopy.StaticIP = ""
-				deviceCopy.Gateway = ""
+				// 没有静态绑定时，保持设备自身的网关配置不变，不要清空
 			}
 
 			devices = append(devices, deviceCopy)
@@ -5467,19 +6178,35 @@ func (api *APIServer) handleGetDevices(w http.ResponseWriter, r *http.Request) {
 		// 获取所有设备，并更新活跃状态
 		devices = api.config.Devices
 
-		// 更新设备活跃状态和主机名
+		// 更新设备活跃状态和主机名（静态绑定不算活跃）
 		activeLeases := api.pool.GetActiveLeases()
 		activeMacs := make(map[string]bool)
 		leaseHostnames := make(map[string]string)
 		for _, lease := range activeLeases {
-			activeMacs[lease.MAC] = true
+			// 只有非静态租约才算活跃
+			if !lease.IsStatic {
+				activeMacs[lease.MAC] = true
+			}
+			// 但主机名可以从任何租约获取
 			if lease.Hostname != "" {
 				leaseHostnames[lease.MAC] = lease.Hostname
 			}
 		}
 
+		// 检查网络扫描器发现的活跃设备
+		scannerActiveMacs := make(map[string]bool)
+		if api.scanner != nil {
+			scanResults := api.scanner.GetScanResults()
+			for _, device := range scanResults {
+				if device.IsActive {
+					scannerActiveMacs[device.MAC] = true
+				}
+			}
+		}
+
 		for i := range devices {
-			devices[i].IsActive = activeMacs[devices[i].MAC]
+			// 设备活跃状态基于：1) 有活跃租约 或 2) 网络扫描器检测到活跃
+			devices[i].IsActive = activeMacs[devices[i].MAC] || scannerActiveMacs[devices[i].MAC]
 
 			// 从租约中更新主机名（如果设备信息中没有主机名或租约中有更新的主机名）
 			if hostname, exists := leaseHostnames[devices[i].MAC]; exists && hostname != "" {
@@ -5490,11 +6217,15 @@ func (api *APIServer) handleGetDevices(w http.ResponseWriter, r *http.Request) {
 			if binding := api.config.FindBindingByMAC(devices[i].MAC); binding != nil {
 				devices[i].HasStaticIP = true
 				devices[i].StaticIP = binding.IP
-				devices[i].Gateway = binding.Gateway
+				// 如果静态绑定中配置了网关，优先使用绑定的网关
+				if binding.Gateway != "" {
+					devices[i].Gateway = binding.Gateway
+				}
+				// 如果静态绑定中没有网关配置，保持设备自身的网关配置不变
 			} else {
 				devices[i].HasStaticIP = false
 				devices[i].StaticIP = ""
-				devices[i].Gateway = ""
+				// 没有静态绑定时，保持设备自身的网关配置不变，不要清空
 			}
 		}
 
@@ -5543,12 +6274,26 @@ func (api *APIServer) handleAddDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	device.LastSeen = now
 
-	// 检查设备是否活跃
+	// 检查设备是否活跃（静态绑定不算活跃）
 	activeLeases := api.pool.GetActiveLeases()
+	device.IsActive = false // 默认不活跃
+
+	// 检查是否有活跃的动态租约
 	for _, lease := range activeLeases {
-		if lease.MAC == device.MAC {
+		if lease.MAC == device.MAC && !lease.IsStatic {
 			device.IsActive = true
 			break
+		}
+	}
+
+	// 如果没有活跃租约，检查网络扫描器是否检测到设备活跃
+	if !device.IsActive && api.scanner != nil {
+		scanResults := api.scanner.GetScanResults()
+		for _, scanDevice := range scanResults {
+			if scanDevice.MAC == device.MAC && scanDevice.IsActive {
+				device.IsActive = true
+				break
+			}
 		}
 	}
 
@@ -5789,10 +6534,10 @@ func (api *APIServer) handleBatchAddDevices(w http.ResponseWriter, r *http.Reque
 		}
 		device.LastSeen = now
 
-		// 检查设备是否活跃
+		// 检查设备是否活跃（静态绑定不算活跃）
 		activeLeases := api.pool.GetActiveLeases()
 		for _, lease := range activeLeases {
-			if lease.MAC == device.MAC {
+			if lease.MAC == device.MAC && !lease.IsStatic {
 				device.IsActive = true
 				break
 			}
@@ -5826,6 +6571,73 @@ func (api *APIServer) handleBatchAddDevices(w http.ResponseWriter, r *http.Reque
 	}
 
 	json.NewEncoder(w).Encode(response)
+}
+
+// handleDeviceGateway 处理设备网关配置
+func (api *APIServer) handleDeviceGateway(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "PUT" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var request struct {
+		MAC     string `json:"mac"`
+		Gateway string `json:"gateway"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// 验证MAC地址
+	if request.MAC == "" {
+		http.Error(w, "MAC address is required", http.StatusBadRequest)
+		return
+	}
+
+	// 验证网关（可以为空，表示使用默认网关）
+	if request.Gateway != "" {
+		// 检查网关是否存在
+		found := false
+		for _, gw := range api.config.Gateways {
+			if gw.Name == request.Gateway {
+				found = true
+				break
+			}
+		}
+		if !found {
+			http.Error(w, "Gateway not found", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// 更新设备配置
+	device := api.config.FindDeviceByMAC(request.MAC)
+	if device != nil {
+		device.Gateway = request.Gateway
+	} else {
+		// 如果设备不存在，创建一个新的设备记录
+		newDevice := config.DeviceInfo{
+			MAC:     request.MAC,
+			Gateway: request.Gateway,
+		}
+		api.config.AddOrUpdateDevice(newDevice)
+	}
+
+	// 保存配置到文件
+	if err := api.config.SaveConfig(api.configPath); err != nil {
+		log.Printf("保存设备网关配置失败: %v", err)
+		http.Error(w, "Failed to save configuration", http.StatusInternalServerError)
+		return
+	}
+
+	// 返回成功响应
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "设备网关配置已更新",
+	})
 }
 
 // handleStaticBindings 处理静态绑定管理请求
@@ -5976,8 +6788,10 @@ func (api *APIServer) handleDeleteStaticBinding(w http.ResponseWriter, r *http.R
 
 	// 查找并删除绑定
 	found := false
+	var deletedMAC string
 	for i, binding := range api.config.Bindings {
 		if binding.Alias == request.Alias {
+			deletedMAC = binding.MAC
 			// 从切片中删除元素
 			api.config.Bindings = append(api.config.Bindings[:i], api.config.Bindings[i+1:]...)
 			found = true
@@ -5989,6 +6803,19 @@ func (api *APIServer) handleDeleteStaticBinding(w http.ResponseWriter, r *http.R
 		w.WriteHeader(http.StatusNotFound)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Binding not found"})
 		return
+	}
+
+	// 删除相关动态租约
+	if deletedMAC != "" && api.pool != nil {
+		api.pool.RemoveAllLeasesByMAC(deletedMAC)
+	}
+
+	// 清除设备的网关配置（如果存在）
+	if deletedMAC != "" {
+		if device := api.config.FindDeviceByMAC(deletedMAC); device != nil {
+			device.Gateway = ""
+			log.Printf("已清除设备 %s 的网关配置", deletedMAC)
+		}
 	}
 
 	// 保存配置到文件
@@ -6226,7 +7053,7 @@ func (api *APIServer) handleConvertLeaseToStatic(w http.ResponseWriter, r *http.
 			Hostname:    hostname,
 			FirstSeen:   time.Now(),
 			LastSeen:    time.Now(),
-			IsActive:    true, // 由于有租约，说明设备是活跃的
+			IsActive:    false, // 静态绑定不表示设备活跃，需要实际网络活动确认
 		}
 
 		// 添加设备到配置中
@@ -7180,4 +8007,58 @@ func (api *APIServer) handleScannerConfig(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
 	}
+}
+
+// handleAvailableIPs 返回所有可用的静态IP地址
+func (api *APIServer) handleAvailableIPs(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	ips := api.pool.GetAvailableIPs()
+	json.NewEncoder(w).Encode(ips)
+}
+
+// handleServerRestart 处理服务器重启请求
+func (api *APIServer) handleServerRestart(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != "POST" {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Method not allowed"})
+		return
+	}
+
+	log.Println("收到服务器重启请求...")
+
+	// 立即返回成功响应，然后进行重启
+	response := map[string]interface{}{
+		"success": true,
+		"message": "DHCP服务器重启命令已接收，正在重启...",
+	}
+	json.NewEncoder(w).Encode(response)
+
+	// 刷新响应缓冲区，确保客户端收到响应
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
+	// 在goroutine中执行重启操作，避免阻塞响应
+	go func() {
+		// 等待一点时间确保响应已发送
+		time.Sleep(500 * time.Millisecond)
+
+		log.Println("开始重启DHCP服务器...")
+
+		// 执行重新加载配置（这会重启DHCP服务）
+		if api.reloadCallback != nil {
+			if err := api.reloadCallback(api.config); err != nil {
+				log.Printf("重启失败: %v", err)
+			} else {
+				log.Println("DHCP服务器重启成功")
+			}
+		} else {
+			log.Println("重启回调函数未设置，使用程序退出方式重启")
+			// 如果没有重启回调，可以通过退出程序的方式触发系统重启
+			// 这需要配合进程管理器（如systemd）使用
+			os.Exit(1)
+		}
+	}()
 }
